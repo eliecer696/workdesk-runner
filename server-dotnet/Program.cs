@@ -17,7 +17,7 @@ internal static class Program
     // CONFIGURATION - Optimized for Virtual Desktop-like performance
     // ═══════════════════════════════════════════════════════════════════════════
     private const int Port = 9000;
-    private const int TargetFps = 72;           // Match Quest 3 refresh rate
+    private const int TargetFps = 60;           // Match Quest 3 refresh rate
     private const int BitrateMbps = 50;         // H.264 bitrate (adjustable 20-150)
     private const int MaxClients = 4;
     private const bool UseHardwareCapture = true;   // DXGI vs GDI+

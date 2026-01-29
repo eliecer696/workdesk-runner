@@ -41,17 +41,30 @@ var _h264_buffer := PackedByteArray()
 var _h264_decoder = null # H264Decoder GDExtension instance
 var _use_h264 := true # Try H.264 first, fall back to JPEG if extension not available
 
+# Threading
+var _decode_thread: Thread
+var _decode_semaphore: Semaphore
+var _decode_mutex: Mutex
+var _frame_queue: Array = []
+var _exit_thread := false
+
 func _ready() -> void:
 	_current_delay = reconnect_delay_sec
 	_next_reconnect_time = reconnect_delay_sec
 	
+	# Initialize Threading
+	_decode_semaphore = Semaphore.new()
+	_decode_mutex = Mutex.new()
+	_decode_thread = Thread.new()
+	_decode_thread.start(_decode_loop)
+
 	# Try to initialize H.264 decoder GDExtension
 	if ClassDB.class_exists("H264Decoder"):
 		_h264_decoder = ClassDB.instantiate("H264Decoder")
 		if _h264_decoder:
 			print("[DesktopClient] H264Decoder extension loaded successfully")
 			if _h264_decoder.has_method("initialize"):
-				_h264_decoder.initialize()
+				_h264_decoder.initialize(1920, 1080)
 		else:
 			print("[DesktopClient] Failed to instantiate H264Decoder")
 			_use_h264 = false
@@ -150,6 +163,95 @@ func _process(delta: float) -> void:
 	# Process all available packets
 	while _ws.get_available_packet_count() > 0:
 		var packet := _ws.get_packet()
+		# Only handle binary packets as video frames
+		if _ws.was_string_packet():
+			pass # Handle text messages if needed
+		else:
+			_handle_frame(packet)
+
+func _exit_tree() -> void:
+	# Clean exit thread
+	_exit_thread = true
+	if _decode_semaphore:
+		_decode_semaphore.post()
+	if _decode_thread and _decode_thread.is_started():
+		_decode_thread.wait_to_finish()
+	
+	disconnect_from_server()
+	
+	if _h264_decoder:
+		if _h264_decoder.has_method("cleanup"):
+			_h264_decoder.cleanup()
+		_h264_decoder = null
+
+func _decode_loop() -> void:
+	while not _exit_thread:
+		_decode_semaphore.wait()
+		if _exit_thread:
+			break
+			
+		_decode_mutex.lock()
+		if _frame_queue.is_empty():
+			_decode_mutex.unlock()
+			continue
+			
+		var frame_data = _frame_queue.pop_front()
+		_decode_mutex.unlock()
+		
+		var is_keyframe = frame_data.is_keyframe
+		var data_bytes = frame_data.bytes
+		
+		# Decode off-thread
+		var image: Image = null
+		var decode_success := false
+		
+		if _use_h264 and _h264_decoder:
+			var rgba_data: PackedByteArray = _h264_decoder.decode_frame(data_bytes)
+			if rgba_data.size() > 0:
+				var w: int = _h264_decoder.get_width()
+				var h: int = _h264_decoder.get_height()
+				image = Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba_data)
+				decode_success = true
+			elif is_keyframe:
+				_h264_decoder.reset()
+		
+		# Fallback to JPEG if needed (still off-thread!)
+		if not decode_success:
+			image = Image.new()
+			var err := image.load_jpg_from_buffer(data_bytes)
+			if err != OK:
+				err = image.load_png_from_buffer(data_bytes)
+			if err == OK:
+				decode_success = true
+		
+		if decode_success and image:
+			# Send back to main thread for texture update
+			call_deferred("_update_texture_on_main_thread", image)
+
+func _update_texture_on_main_thread(image: Image) -> void:
+	# OPTIMIZATION: Reuse texture logic here, on main thread where it's safe
+	var frame_size := Vector2i(image.get_width(), image.get_height())
+	
+	if _reusable_texture == null or frame_size != _last_frame_size:
+		_reusable_texture = ImageTexture.create_from_image(image)
+		_last_frame_size = frame_size
+		# print("[DesktopClient] Created texture: ", frame_size)
+	else:
+		_reusable_texture.update(image)
+	
+	emit_signal("frame_received", _reusable_texture)
+	
+	# Performance tracking
+	_frame_count += 1
+	_frames_this_second += 1
+	
+	if _frame_count % 300 == 1:
+		print("[DesktopClient] Frame #%d, %dx%d, FPS: %d (I:%d P:%d) [Threaded]" % [
+			_frame_count, frame_size.x, frame_size.y,
+			_current_fps, _keyframes_received, _pframes_received
+		])
+	while _ws.get_available_packet_count() > 0:
+		var packet := _ws.get_packet()
 		if _ws.was_string_packet():
 			_handle_text(packet.get_string_from_utf8())
 		else:
@@ -188,22 +290,20 @@ func _handle_text(text: String) -> void:
 # ═══════════════════════════════════════════════════════════════════════════
 
 func _handle_frame(bytes: PackedByteArray) -> void:
-	# New frame format: [FrameType:1][CursorU:4][CursorV:4][Data:N]
+	# New format: [FrameType:1][CursorU:4][CursorV:4][Data:N]
 	# FrameType: 0 = P-frame, 1 = I-frame (keyframe)
 	if bytes.size() < 10:
 		# Try old format for backwards compatibility
 		_handle_frame_legacy(bytes)
 		return
 	
-	var start_time := Time.get_ticks_usec()
-	
-	# Parse header
+	# Parse header on main thread (very fast)
 	var frame_type := bytes[0] # 0 = P-frame, 1 = I-frame
-	var cursor_u := bytes.decode_float(1)
-	var cursor_v := bytes.decode_float(5)
+	var cursor_u: float = bytes.decode_float(1)
+	var cursor_v: float = bytes.decode_float(5)
 	var frame_data := bytes.slice(9)
 	
-	# Emit cursor position
+	# Emit cursor position immediately
 	emit_signal("cursor_received", Vector2(cursor_u, cursor_v))
 	
 	# Track keyframes
@@ -216,74 +316,21 @@ func _handle_frame(bytes: PackedByteArray) -> void:
 	
 	# Skip P-frames until we get a keyframe (for H.264)
 	if _waiting_for_keyframe and not is_keyframe:
-		if _frame_count % 60 == 0:
-			print("[DesktopClient] Waiting for keyframe... (received P-frame)")
 		return
 	
-	# Decode the image - try H.264 first, then JPEG
-	var image := Image.new()
-	var decode_success := false
+	# Push to thread queue
+	_decode_mutex.lock()
+	# Drop old frames if we are falling behind (latency optimization)
+	if _frame_queue.size() > 2:
+		_frame_queue.pop_front() # Drop oldest
 	
-	if _use_h264 and _h264_decoder:
-		# Try H.264 decode using GDExtension
-		var rgba_data: PackedByteArray = _h264_decoder.decode_frame(frame_data)
-		if rgba_data.size() > 0:
-			var w: int = _h264_decoder.get_width()
-			var h: int = _h264_decoder.get_height()
-			image = Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba_data)
-			decode_success = true
-			# print("Decoded H.264 frame: %dx%d" % [w, h])
-		else:
-			print("[DesktopClient] H.264 decode returned empty (FrameType: %d, Size: %d)" % [frame_type, frame_data.size()])
-			if is_keyframe:
-				# Reset decoder on keyframe decode failure
-				print("[DesktopClient] Keyframe decode failed, resetting decoder")
-				_h264_decoder.reset()
+	_frame_queue.append({
+		"bytes": frame_data,
+		"is_keyframe": is_keyframe
+	})
+	_decode_mutex.unlock()
+	_decode_semaphore.post()
 	
-	# Fallback to JPEG if H.264 failed or not available
-	if not decode_success:
-		# If we expected H.264 but got here, it's likely a failure.
-		# But if we aren't using H264, this is normal path.
-		if _use_h264:
-			print("Fallback to JPEG/PNG (H.264 failed or empty)")
-			
-		var err := image.load_jpg_from_buffer(frame_data)
-		if err != OK:
-			err = image.load_png_from_buffer(frame_data)
-		if err == OK:
-			decode_success = true
-		else:
-			# Neither codec worked
-			if _frame_count % 100 == 0:
-				print("[DesktopClient] Failed to decode frame (neither H.264 nor JPEG)")
-			return
-	
-	# ═══════════════════════════════════════════════════════════════════════
-	# OPTIMIZATION: Reuse texture instead of allocating new one each frame
-	# ═══════════════════════════════════════════════════════════════════════
-	var frame_size := Vector2i(image.get_width(), image.get_height())
-	
-	if _reusable_texture == null or frame_size != _last_frame_size:
-		# First frame or resolution changed - create new texture
-		_reusable_texture = ImageTexture.create_from_image(image)
-		_last_frame_size = frame_size
-		print("[DesktopClient] Created texture: ", frame_size)
-	else:
-		# Reuse existing texture - just update the data
-		_reusable_texture.update(image)
-	
-	emit_signal("frame_received", _reusable_texture)
-	
-	# Performance tracking
-	_frame_count += 1
-	_frames_this_second += 1
-	_decode_time_ms = (Time.get_ticks_usec() - start_time) / 1000.0
-	
-	if _frame_count % 300 == 1:
-		print("[DesktopClient] Frame #%d, %dx%d, decode: %.1fms, FPS: %d (I:%d P:%d)" % [
-			_frame_count, frame_size.x, frame_size.y, _decode_time_ms,
-			_current_fps, _keyframes_received, _pframes_received
-		])
 
 func _handle_frame_legacy(bytes: PackedByteArray) -> void:
 	# Old format: [CursorU:4][CursorV:4][JPEG:N]
