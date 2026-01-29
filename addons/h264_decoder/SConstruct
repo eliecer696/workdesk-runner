@@ -1,0 +1,47 @@
+#!/usr/bin/env python
+"""
+SCons build script for H264 Decoder GDExtension
+Build instructions:
+    1. Install godot-cpp: git clone https://github.com/godotengine/godot-cpp --recursive
+    2. Build godot-cpp: cd godot-cpp && scons platform=<platform>
+    3. Build extension: scons platform=<platform>
+"""
+
+import os
+
+env = SConscript("godot-cpp/SConstruct")
+
+# Add FFmpeg include/lib paths
+ffmpeg_path = os.environ.get("FFMPEG_PATH", "ffmpeg")
+
+env.Append(CPPPATH=[
+    "src/",
+    f"{ffmpeg_path}/include",
+])
+
+env.Append(LIBPATH=[
+    f"{ffmpeg_path}/lib",
+])
+
+# Link FFmpeg libraries
+if env["platform"] == "windows":
+    env.Append(LIBS=["avcodec", "avutil", "swscale"])
+elif env["platform"] == "linux":
+    env.Append(LIBS=["avcodec", "avutil", "swscale"])
+elif env["platform"] == "android":
+    env.Append(LIBS=["avcodec", "avutil", "swscale"])
+
+# Source files
+sources = Glob("src/*.cpp")
+
+# Build library
+library = env.SharedLibrary(
+    "bin/{}/{}h264_decoder{}".format(
+        env["platform"],
+        "lib" if env["platform"] != "windows" else "",
+        env["SHLIBSUFFIX"]
+    ),
+    source=sources,
+)
+
+Default(library)

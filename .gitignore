@@ -1,0 +1,27 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+
+# GDExtension build artifacts
+addons/h264_decoder/bin/
+addons/h264_decoder/godot-cpp/
+addons/h264_decoder/ffmpeg/
+addons/h264_decoder/build/
+
+# FFmpeg downloads
+ffmpeg-temp/
+ffmpeg-*.7z
+*.7z
+
+# Large files
+*.zip
+workdesk-runner.zip
+
+# IDE
+.vscode/
+*.suo
+*.user
+
+# Server build
+server-dotnet/bin/
+server-dotnet/obj/

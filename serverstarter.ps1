@@ -1,0 +1,1 @@
+Start-Process powershell -Verb RunAs -ArgumentList '-NoExit', '-Command', 'cd "d:\Devbud\Workdesk\Game\workdesk-runner\server-dotnet"; dotnet run'

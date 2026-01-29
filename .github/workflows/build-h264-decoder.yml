@@ -1,0 +1,105 @@
+name: Build H264 Decoder GDExtension
+
+on:
+  push:
+    paths:
+      - 'addons/h264_decoder/**'
+  workflow_dispatch:
+
+env:
+  GODOT_CPP_VERSION: godot-4.2-stable
+  FFMPEG_VERSION: 5.1.2
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install SCons
+        run: pip install scons
+      
+      - name: Clone godot-cpp
+        run: |
+          cd addons/h264_decoder
+          git clone --depth 1 --branch ${{ env.GODOT_CPP_VERSION }} https://github.com/godotengine/godot-cpp.git --recursive
+      
+      - name: Download FFmpeg
+        run: |
+          cd addons/h264_decoder
+          mkdir ffmpeg
+          Invoke-WebRequest -Uri "https://github.com/GyanD/codexffmpeg/releases/download/${{ env.FFMPEG_VERSION }}/ffmpeg-${{ env.FFMPEG_VERSION }}-full_build-shared.7z" -OutFile ffmpeg.7z
+          7z x ffmpeg.7z -offmpeg-temp
+          xcopy /E ffmpeg-temp\ffmpeg-${{ env.FFMPEG_VERSION }}-full_build-shared\include ffmpeg\include\
+          xcopy /E ffmpeg-temp\ffmpeg-${{ env.FFMPEG_VERSION }}-full_build-shared\lib ffmpeg\lib\
+      
+      - name: Build godot-cpp
+        run: |
+          cd addons/h264_decoder/godot-cpp
+          scons platform=windows target=template_release
+      
+      - name: Build extension
+        run: |
+          cd addons/h264_decoder
+          scons platform=windows target=template_release
+        env:
+          FFMPEG_PATH: ffmpeg
+      
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: h264_decoder-windows
+          path: addons/h264_decoder/bin/windows/
+
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install scons
+          sudo apt-get update
+          sudo apt-get install -y android-sdk-platform-tools android-ndk-r25c
+      
+      - name: Clone godot-cpp
+        run: |
+          cd addons/h264_decoder
+          git clone --depth 1 --branch ${{ env.GODOT_CPP_VERSION }} https://github.com/godotengine/godot-cpp.git --recursive
+      
+      - name: Download FFmpeg for Android
+        run: |
+          cd addons/h264_decoder
+          mkdir -p ffmpeg/include ffmpeg/lib
+          # Download pre-built FFmpeg for Android ARM64
+          wget https://github.com/AdrianAndroid/FFmpegPlayer/releases/download/v1.0/ffmpeg-android-arm64-v8a.tar.gz
+          tar -xzf ffmpeg-android-arm64-v8a.tar.gz -C ffmpeg
+      
+      - name: Build godot-cpp for Android
+        run: |
+          cd addons/h264_decoder/godot-cpp
+          scons platform=android arch=arm64 target=template_release
+      
+      - name: Build extension for Android
+        run: |
+          cd addons/h264_decoder
+          scons platform=android arch=arm64 target=template_release
+        env:
+          FFMPEG_PATH: ffmpeg
+          ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/25.2.9519653
+      
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: h264_decoder-android
+          path: addons/h264_decoder/bin/android/
