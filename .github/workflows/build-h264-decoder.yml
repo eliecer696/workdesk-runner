@@ -47,14 +47,16 @@ jobs:
       - name: Build godot-cpp for Android
         run: |
           cd addons/h264_decoder/godot-cpp
-          scons platform=android arch=arm64 target=template_release
+          echo "NDK Path from env: $ANDROID_NDK_ROOT"
+          scons platform=android arch=arm64 target=template_release ANDROID_NDK_ROOT="$ANDROID_NDK_ROOT"
         env:
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
       
       - name: Build extension for Android
         run: |
           cd addons/h264_decoder
-          scons platform=android arch=arm64 target=template_release
+          echo "NDK Path from env: $ANDROID_NDK_ROOT"
+          scons platform=android arch=arm64 target=template_release ANDROID_NDK_ROOT="$ANDROID_NDK_ROOT"
         env:
           FFMPEG_PATH: ffmpeg
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
