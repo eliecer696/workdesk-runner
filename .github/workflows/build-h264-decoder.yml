@@ -47,25 +47,22 @@ jobs:
       - name: Build godot-cpp for Android
         run: |
           cd addons/h264_decoder/godot-cpp
-          # Unset ANDROID_HOME to prevent SCons from picking up the broken default NDK
-          unset ANDROID_HOME
-          unset ANDROID_SDK_ROOT
           echo "Using NDK: $ANDROID_NDK_ROOT"
           scons platform=android arch=arm64 target=template_release
         env:
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_HOME: ""
+          ANDROID_SDK_ROOT: ""
       
       - name: Build extension for Android
         run: |
           cd addons/h264_decoder
-          unset ANDROID_HOME
-          unset ANDROID_SDK_ROOT
           scons platform=android arch=arm64 target=template_release
         env:
           FFMPEG_PATH: ffmpeg
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_HOME: ""
+          ANDROID_SDK_ROOT: ""
       
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
