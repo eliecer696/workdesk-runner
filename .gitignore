@@ -5,7 +5,7 @@
 # GDExtension build artifacts
 addons/h264_decoder/bin/
 addons/h264_decoder/godot-cpp/
-addons/h264_decoder/ffmpeg/
+
 addons/h264_decoder/build/
 
 # FFmpeg downloads

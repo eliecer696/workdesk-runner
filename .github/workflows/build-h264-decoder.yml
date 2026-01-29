@@ -38,36 +38,11 @@ jobs:
           cd addons/h264_decoder
           git clone --depth 1 --branch ${{ env.GODOT_CPP_VERSION }} https://github.com/godotengine/godot-cpp.git --recursive
       
-      - name: Download FFmpeg for Android
+      - name: Verify FFmpeg Binaries
         run: |
           cd addons/h264_decoder
-          mkdir -p ffmpeg/include ffmpeg/lib
-          # Download FFmpeg Android builds from Javernaut/ffmpeg-android-maker
-          # Using version 6.0
-          
-          # 1. Compile FFmpeg from source using ffmpeg-android-maker (Javernaut)
-          # This automates the NDK build process and avoids download URL issues.
-          
-          # Clone the builder repo
-          git clone https://github.com/Javernaut/ffmpeg-android-maker.git
-          cd ffmpeg-android-maker
-          
-          # Run build script for arm64-v8a
-          # Note: This might take 10-20 minutes.
-          # We enable only what we need to minimize time? 
-          # Default build is fine for now to ensure we have libavcodec with h264.
-          ./ffmpeg-android-maker.sh --archs=arm64-v8a
-          
-          # Copy outputs
-          cd ..
-          mkdir -p ffmpeg/include ffmpeg/lib
-          
-          # Script outputs to 'ffmpeg-android-maker/output'
-          cp -r ffmpeg-android-maker/output/lib/arm64-v8a/* ffmpeg/lib/
-          cp -r ffmpeg-android-maker/output/include/* ffmpeg/include/
-          
-          # Cleanup source build dir to save space/time
-          rm -rf ffmpeg-android-maker
+          echo "Using robust local FFmpeg binaries."
+          ls -R ffmpeg
       
       - name: Build godot-cpp for Android
         run: |
