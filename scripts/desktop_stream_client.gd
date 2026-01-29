@@ -58,15 +58,15 @@ func _ready() -> void:
 	_next_reconnect_time = reconnect_delay_sec
 	
 	# Initialize Audio
-	# _audio_player = AudioStreamPlayer.new()
-	# add_child(_audio_player)
-	# var generator = AudioStreamGenerator.new()
-	# generator.mix_rate = _audio_sample_rate
-	# generator.buffer_length = 0.1 # 100ms buffer
-	# _audio_player.stream = generator
-	# _audio_player.play()
-	# _audio_playback = _audio_player.get_stream_playback()
-	# print("[DesktopClient] Audio initialized at ", _audio_sample_rate, "Hz")
+	_audio_player = AudioStreamPlayer.new()
+	add_child(_audio_player)
+	var generator = AudioStreamGenerator.new()
+	generator.mix_rate = _audio_sample_rate
+	generator.buffer_length = 0.1 # 100ms buffer
+	_audio_player.stream = generator
+	_audio_player.play()
+	_audio_playback = _audio_player.get_stream_playback()
+	print("[DesktopClient] Audio initialized at ", _audio_sample_rate, "Hz")
 
 	# Initialize Threading
 	_decode_semaphore = Semaphore.new()
