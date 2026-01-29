@@ -376,18 +376,30 @@ func _handle_frame(bytes: PackedByteArray) -> void:
 	if _waiting_for_keyframe and not is_keyframe:
 		return
 	
-	# Push to thread queue
-	_decode_mutex.lock()
-	# Drop old frames if we are falling behind (latency optimization)
-	if _frame_queue.size() > 2:
-		_frame_queue.pop_front() # Drop oldest
+	# DEBUG: BYPASS THREAD TO TEST STABILITY
+	# _decode_mutex.lock()
+	# if _frame_queue.size() > 2:
+	# 	_frame_queue.pop_front()
+	# _frame_queue.append({ "bytes": frame_data, "is_keyframe": is_keyframe })
+	# _decode_mutex.unlock()
+	# _decode_semaphore.post()
 	
-	_frame_queue.append({
-		"bytes": frame_data,
-		"is_keyframe": is_keyframe
-	})
-	_decode_mutex.unlock()
-	_decode_semaphore.post()
+	# DIRECT DECODE (Main Thread)
+	var image: Image = null
+	var decode_success := false
+	
+	if _use_h264 and _h264_decoder:
+		var rgba_data: PackedByteArray = _h264_decoder.decode_frame(frame_data)
+		if rgba_data.size() > 0:
+			var w: int = _h264_decoder.get_width()
+			var h: int = _h264_decoder.get_height()
+			image = Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba_data)
+			decode_success = true
+		elif is_keyframe:
+			_h264_decoder.reset()
+			
+	if decode_success and image:
+		_update_texture_on_main_thread(image)
 	
 
 func _handle_frame_legacy(bytes: PackedByteArray) -> void:
