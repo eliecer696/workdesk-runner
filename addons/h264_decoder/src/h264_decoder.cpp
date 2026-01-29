@@ -72,7 +72,14 @@ bool H264Decoder::initialize(int expected_width, int expected_height) {
     if (codec) {
         UtilityFunctions::print("[H264Decoder] Found h264_mediacodec! Using hardware decoding.");
     } else {
-        UtilityFunctions::print("[H264Decoder] h264_mediacodec not found in FFmpeg build.");
+        UtilityFunctions::print("[H264Decoder] h264_mediacodec not found. Listing available decoders:");
+        void *i = 0;
+        const AVCodec *c = nullptr;
+        while ((c = av_codec_iterate(&i))) {
+            if (av_codec_is_decoder(c) && c->id == AV_CODEC_ID_H264) {
+                 UtilityFunctions::print("[H264Decoder] Available H.264 decoder: ", c->name);
+            }
+        }
     }
     #else
     // Try NVDEC on desktop
