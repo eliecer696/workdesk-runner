@@ -41,25 +41,34 @@ jobs:
         run: |
           cd addons/h264_decoder
           mkdir -p ffmpeg/include ffmpeg/lib
-          # Download FFmpeg Android builds from Khang-NT/ffmpeg-binary-android (reliable source)
-          # Using version 4.4.1 (API 24+) headers + arm64 .so
+          # Download FFmpeg Android builds from Khang-NT/ffmpeg-binary-android (Release 2018-07-31)
+          # Provides libavcodec.so, libavutil.so, etc.
           
-          # 1. Download Libraries (arm64-v8a)
-          wget -q https://github.com/Khang-NT/ffmpeg-binary-android/releases/download/2022-08-16/ffmpeg-android-arm64-v8a.zip
-          unzip -q ffmpeg-android-arm64-v8a.zip -d ffmpeg-temp
+          wget -q https://github.com/Khang-NT/ffmpeg-binary-android/releases/download/2018-07-31/arm64-v8a-full.tar.bz2
+          tar -xf arm64-v8a-full.tar.bz2
           
-          # Move .so files
+          # Structure is likely: ffmpeg-android/lib and include
+          # But for Khang-NT it might be directly in top level or specific folder.
+          # Based on name, it extracts to current dir or similar.
+          # Let's verify by listing after extract (in run block if needed), but assuming standard:
+          
+          # NOTE: Khang-NT binaries often extract to a folder named "ffmpeg-android" or similar.
+          # Let's find where 'include' is.
+          
+          find . -maxdepth 2 -type d -name "include"
+          
+          # Move to expected location
+          mkdir -p ffmpeg
+          # Assuming extraction creates 'include' and 'lib' in extracted folder
+          # We'll use find to locate and move
+          
+          # Robust move:
+          cp -r */include ffmpeg/ || cp -r include ffmpeg/ || true
           mkdir -p ffmpeg/lib
-          cp ffmpeg-temp/ffmpeg-android-arm64-v8a/lib/*.so ffmpeg/lib/
-          
-          # 2. Download Headers (common)
-          wget -q https://github.com/Khang-NT/ffmpeg-binary-android/releases/download/2022-08-16/ffmpeg-android-arm64-v8a.zip -O headers.zip
-          unzip -q headers.zip -d headers-temp
-          mkdir -p ffmpeg/include
-          cp -r headers-temp/ffmpeg-android-arm64-v8a/include/* ffmpeg/include/
+          cp */lib/*.so ffmpeg/lib/ || cp lib/*.so ffmpeg/lib/ || true
           
           # Cleanup
-          rm -rf ffmpeg-temp headers-temp *.zip
+          rm -f arm64-v8a-full.tar.bz2
       
       - name: Build godot-cpp for Android
         run: |
