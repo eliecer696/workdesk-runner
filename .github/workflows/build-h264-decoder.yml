@@ -45,79 +45,29 @@ jobs:
           # Download FFmpeg Android builds from Javernaut/ffmpeg-android-maker
           # Using version 6.0
           
-          # 1. Download Libraries & Headers using GitHub CLI (reliable, handles URLs automatically)
-          # Repository: Javernaut/ffmpeg-android-maker
-          # We prefer 'mobile-ffmpeg-6.0.tar.gz' or similar. We'll download the main archive.
+          # 1. Compile FFmpeg from source using ffmpeg-android-maker (Javernaut)
+          # This automates the NDK build process and avoids download URL issues.
           
-          # Auth token is required for gh cli, effectively usually standard GITHUB_TOKEN works or anonymous?
-          # Actually, public repos might not need auth for 'gh release download' if using https?
-          # Wait, gh cli needs auth. We can use the actions token.
+          # Clone the builder repo
+          git clone https://github.com/Javernaut/ffmpeg-android-maker.git
+          cd ffmpeg-android-maker
           
-          echo "Listing releases to find asset name..."
-          gh release download --repo Javernaut/ffmpeg-android-maker --pattern "*.tar.gz" --dir . || gh release download --repo Javernaut/ffmpeg-android-maker --pattern "*.zip" --dir .
+          # Run build script for arm64-v8a
+          # Note: This might take 10-20 minutes.
+          # We enable only what we need to minimize time? 
+          # Default build is fine for now to ensure we have libavcodec with h264.
+          ./ffmpeg-android-maker.sh --archs=arm64-v8a
           
-          # Find what we downloaded
-          ARCHIVE_NAME=$(ls *ffmpeg*.tar.gz 2>/dev/null || ls *ffmpeg*.zip 2>/dev/null | head -n 1)
+          # Copy outputs
+          cd ..
+          mkdir -p ffmpeg/include ffmpeg/lib
           
-          if [ -z "$ARCHIVE_NAME" ]; then
-             echo "Failed to download any FFmpeg archive!"
-             # Fallback to Khang-NT if Javernaut fails (using gh to be safe)
-             echo "Trying Khang-NT fallback..."
-             gh release download --repo Khang-NT/ffmpeg-binary-android --pattern "*arm64-v8a.zip" --dir .
-             ARCHIVE_NAME=$(ls *arm64-v8a.zip | head -n 1)
-          fi
+          # Script outputs to 'ffmpeg-android-maker/output'
+          cp -r ffmpeg-android-maker/output/lib/arm64-v8a/* ffmpeg/lib/
+          cp -r ffmpeg-android-maker/output/include/* ffmpeg/include/
           
-          if [ -z "$ARCHIVE_NAME" ]; then
-             echo "Still no archive found. Exiting."
-             exit 1
-          fi
-          
-          echo "Downloaded: $ARCHIVE_NAME"
-          
-          # Extract
-          mkdir -p temp_extract
-          if [[ "$ARCHIVE_NAME" == *.tar.gz ]]; then
-             tar -xzf "$ARCHIVE_NAME" -C temp_extract
-          elif [[ "$ARCHIVE_NAME" == *.zip ]]; then
-             unzip -q "$ARCHIVE_NAME" -d temp_extract
-          fi
-          
-          # Locate files logic (same as before)
-          # ... (rest of the logic needs to adapt to finding the folder)
-          
-          # Find the lib folder recursively
-          LIB_DIR=$(find temp_extract -type d -name "lib" | grep "arm64-v8a" | head -n 1 || find temp_extract -type d -name "libs" | grep "arm64-v8a" | head -n 1)
-          # If checks failed, try just 'lib' and assume structure
-          if [ -z "$LIB_DIR" ]; then 
-             LIB_DIR=$(find temp_extract -type d -name "arm64-v8a" | head -n 1)
-          fi
-          
-          echo "Found lib dir: $LIB_DIR"
-          
-          # Find include dir
-          INCLUDE_DIR=$(find temp_extract -type d -name "include" | head -n 1)
-          echo "Found include dir: $INCLUDE_DIR"
-          
-          if [ -n "$LIB_DIR" ] && [ -n "$INCLUDE_DIR" ]; then
-             cp -r "$LIB_DIR"/* ffmpeg/lib/
-             # If LIB_DIR pointed to arm64-v8a directly, copy contents.
-             # If it pointed to 'lib' containing arm64-v8a, we need to go deeper.
-             # Our find logic above tries to find the FOLDER that CONTAINS the .so files.
-             
-             # Let's be safer: copy all .so files from temp_extract to ffmpeg/lib
-             find temp_extract -name "*.so" -exec cp {} ffmpeg/lib/ \;
-             
-             cp -r "$INCLUDE_DIR"/* ffmpeg/include/
-          else
-             echo "Could not find valid structure in $ARCHIVE_NAME"
-             find temp_extract
-             exit 1
-          fi
-          
-          # Cleanup
-          rm -rf temp_extract "$ARCHIVE_NAME"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Cleanup source build dir to save space/time
+          rm -rf ffmpeg-android-maker
       
       - name: Build godot-cpp for Android
         run: |
