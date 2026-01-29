@@ -274,31 +274,31 @@ func _update_texture_on_main_thread(image: Image) -> void:
 			_handle_frame(packet)
 
 func _handle_audio_packet(bytes: PackedByteArray) -> void:
-    if not _audio_playback:
-        return
-        
-    # Payload format: [Type:1][PCM_FLOAT_L][PCM_FLOAT_R][...]
-    # Skip type byte (index 0)
-    var offset := 1
-    var available_bytes := bytes.size() - 1
-    var sample_count := available_bytes / 8 # 4 bytes/float * 2 channels
-    
-    if sample_count <= 0:
-        return
-        
-    var buffer := PackedVector2Array()
-    buffer.resize(sample_count)
-    
-    # GDScript loop for decoding (performant enough for small chunks)
-    for i in range(sample_count):
-        var l := bytes.decode_float(offset)
-        var r := bytes.decode_float(offset + 4)
-        buffer[i] = Vector2(l, r)
-        offset += 8
-    
-    # Push to audio server
-    if _audio_playback.get_frames_available() >= sample_count:
-        _audio_playback.push_buffer(buffer)
+	if not _audio_playback:
+		return
+		
+	# Payload format: [Type:1][PCM_FLOAT_L][PCM_FLOAT_R][...]
+	# Skip type byte (index 0)
+	var offset := 1
+	var available_bytes := bytes.size() - 1
+	var sample_count := available_bytes / 8 # 4 bytes/float * 2 channels
+	
+	if sample_count <= 0:
+		return
+		
+	var buffer := PackedVector2Array()
+	buffer.resize(sample_count)
+	
+	# GDScript loop for decoding (performant enough for small chunks)
+	for i in range(sample_count):
+		var l := bytes.decode_float(offset)
+		var r := bytes.decode_float(offset + 4)
+		buffer[i] = Vector2(l, r)
+		offset += 8
+	
+	# Push to audio server
+	if _audio_playback.get_frames_available() >= sample_count:
+		_audio_playback.push_buffer(buffer)
 
 
 func _send_hello() -> void:
