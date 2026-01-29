@@ -7,6 +7,23 @@
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
+// FFmpeg JNI wrapper
+extern "C" {
+#include <libavcodec/jni.h>
+}
+
+#if defined(__ANDROID__) || defined(ANDROID_ENABLED)
+#include <jni.h>
+static JavaVM *g_jvm = nullptr;
+
+// JNI_OnLoad is called when the shared library is loaded by the JVM/Android
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
+    g_jvm = vm;
+    // Don't log here as Godot IO might not be ready, or use standard printf
+    return JNI_VERSION_1_6;
+}
+#endif
+
 using namespace godot;
 
 void H264Decoder::_bind_methods() {
@@ -37,7 +54,20 @@ bool H264Decoder::initialize(int expected_width, int expected_height) {
     
     // Check for Android platform using Godot's define or standard define
     #if defined(__ANDROID__) || defined(ANDROID_ENABLED)
-    UtilityFunctions::print("[H264Decoder] Android platform detected, checking for h264_mediacodec");
+    UtilityFunctions::print("[H264Decoder] Android platform detected.");
+    
+    if (g_jvm) {
+        // Register JavaVM with FFmpeg so it can access MediaCodec
+        if (av_jni_set_java_vm(g_jvm, nullptr) == 0) {
+            UtilityFunctions::print("[H264Decoder] Registered JavaVM with FFmpeg.");
+        } else {
+            UtilityFunctions::printerr("[H264Decoder] Failed to register JavaVM with FFmpeg!");
+        }
+    } else {
+        UtilityFunctions::printerr("[H264Decoder] JavaVM not found! (JNI_OnLoad not called?)");
+    }
+
+    UtilityFunctions::print("[H264Decoder] Checking for h264_mediacodec...");
     codec = avcodec_find_decoder_by_name("h264_mediacodec");
     if (codec) {
         UtilityFunctions::print("[H264Decoder] Found h264_mediacodec! Using hardware decoding.");
