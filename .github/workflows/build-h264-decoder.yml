@@ -45,7 +45,14 @@ jobs:
           # Download FFmpeg Android builds from Javernaut/ffmpeg-android-maker
           # Using version 6.0
           
-          wget -q https://github.com/Javernaut/ffmpeg-android-maker/releases/download/6.0/ffmpeg-android-6.0.tar.gz
+          # 1. Download Libraries & Headers (universal tar.gz)
+          echo "Downloading from Javernaut..."
+          curl -L -O https://github.com/Javernaut/ffmpeg-android-maker/releases/download/6.0/ffmpeg-android-6.0.tar.gz
+          
+          if [ ! -f ffmpeg-android-6.0.tar.gz ]; then
+              echo "Download failed!"
+              exit 1
+          fi
           
           # Extract to temp dir to avoid conflicts
           mkdir -p temp_extract
