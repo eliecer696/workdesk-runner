@@ -300,6 +300,14 @@ func _handle_audio_packet(bytes: PackedByteArray) -> void:
 	if _audio_playback.get_frames_available() >= sample_count:
 		_audio_playback.push_buffer(buffer)
 
+func _get_error_name(err: int) -> String:
+	match err:
+		OK: return "OK"
+		ERR_CANT_CONNECT: return "ERR_CANT_CONNECT"
+		ERR_CANT_RESOLVE: return "ERR_CANT_RESOLVE"
+		ERR_CONNECTION_ERROR: return "ERR_CONNECTION_ERROR"
+		ERR_TIMEOUT: return "ERR_TIMEOUT"
+		_: return "ERROR_%d" % err
 
 func _send_hello() -> void:
 	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
