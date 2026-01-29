@@ -41,6 +41,11 @@ var _h264_buffer := PackedByteArray()
 var _h264_decoder = null # H264Decoder GDExtension instance
 var _use_h264 := true # Try H.264 first, fall back to JPEG if extension not available
 
+# Audio
+var _audio_player: AudioStreamPlayer
+var _audio_playback: AudioStreamGeneratorPlayback
+var _audio_sample_rate := 48000.0
+
 # Threading
 var _decode_thread: Thread
 var _decode_semaphore: Semaphore
@@ -52,6 +57,17 @@ func _ready() -> void:
 	_current_delay = reconnect_delay_sec
 	_next_reconnect_time = reconnect_delay_sec
 	
+	# Initialize Audio
+	_audio_player = AudioStreamPlayer.new()
+	add_child(_audio_player)
+	var generator = AudioStreamGenerator.new()
+	generator.mix_rate = _audio_sample_rate
+	generator.buffer_length = 0.1 # 100ms buffer
+	_audio_player.stream = generator
+	_audio_player.play()
+	_audio_playback = _audio_player.get_stream_playback()
+	print("[DesktopClient] Audio initialized at ", _audio_sample_rate, "Hz")
+
 	# Initialize Threading
 	_decode_semaphore = Semaphore.new()
 	_decode_mutex = Mutex.new()
@@ -257,14 +273,33 @@ func _update_texture_on_main_thread(image: Image) -> void:
 		else:
 			_handle_frame(packet)
 
-func _get_error_name(err: int) -> String:
-	match err:
-		OK: return "OK"
-		ERR_CANT_CONNECT: return "ERR_CANT_CONNECT"
-		ERR_CANT_RESOLVE: return "ERR_CANT_RESOLVE"
-		ERR_CONNECTION_ERROR: return "ERR_CONNECTION_ERROR"
-		ERR_TIMEOUT: return "ERR_TIMEOUT"
-		_: return "ERROR_%d" % err
+func _handle_audio_packet(bytes: PackedByteArray) -> void:
+    if not _audio_playback:
+        return
+        
+    # Payload format: [Type:1][PCM_FLOAT_L][PCM_FLOAT_R][...]
+    # Skip type byte (index 0)
+    var offset := 1
+    var available_bytes := bytes.size() - 1
+    var sample_count := available_bytes / 8 # 4 bytes/float * 2 channels
+    
+    if sample_count <= 0:
+        return
+        
+    var buffer := PackedVector2Array()
+    buffer.resize(sample_count)
+    
+    # GDScript loop for decoding (performant enough for small chunks)
+    for i in range(sample_count):
+        var l := bytes.decode_float(offset)
+        var r := bytes.decode_float(offset + 4)
+        buffer[i] = Vector2(l, r)
+        offset += 8
+    
+    # Push to audio server
+    if _audio_playback.get_frames_available() >= sample_count:
+        _audio_playback.push_buffer(buffer)
+
 
 func _send_hello() -> void:
 	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
@@ -298,7 +333,13 @@ func _handle_frame(bytes: PackedByteArray) -> void:
 		return
 	
 	# Parse header on main thread (very fast)
-	var frame_type := bytes[0] # 0 = P-frame, 1 = I-frame
+	var frame_type := bytes[0] # 0 = P-frame, 1 = I-frame, 2 = Audio
+	
+	# HANDLE AUDIO PACKET
+	if frame_type == 2:
+		_handle_audio_packet(bytes)
+		return
+
 	var cursor_u: float = bytes.decode_float(1)
 	var cursor_v: float = bytes.decode_float(5)
 	var frame_data := bytes.slice(9)
