@@ -35,11 +35,14 @@ bool H264Decoder::initialize(int expected_width, int expected_height) {
     // Find H.264 decoder (prefer hardware)
     const AVCodec* codec = nullptr;
     
-    // Try hardware decoders first
-    #ifdef __ANDROID__
+    // Check for Android platform using Godot's define or standard define
+    #if defined(__ANDROID__) || defined(ANDROID_ENABLED)
+    UtilityFunctions::print("[H264Decoder] Android platform detected, checking for h264_mediacodec");
     codec = avcodec_find_decoder_by_name("h264_mediacodec");
     if (codec) {
-        UtilityFunctions::print("[H264Decoder] Using MediaCodec hardware decoder");
+        UtilityFunctions::print("[H264Decoder] Found h264_mediacodec! Using hardware decoding.");
+    } else {
+        UtilityFunctions::print("[H264Decoder] h264_mediacodec not found in FFmpeg build.");
     }
     #else
     // Try NVDEC on desktop

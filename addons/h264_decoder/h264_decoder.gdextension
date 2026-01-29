@@ -3,9 +3,19 @@ entry_symbol = "h264_decoder_library_init"
 compatibility_minimum = "4.2"
 
 [libraries]
-linux.x86_64.debug = "res://addons/h264_decoder/bin/linux/libh264_decoder.so"
-linux.x86_64.release = "res://addons/h264_decoder/bin/linux/libh264_decoder.so"
-windows.x86_64.debug = "res://addons/h264_decoder/bin/windows/h264_decoder.dll"
-windows.x86_64.release = "res://addons/h264_decoder/bin/windows/h264_decoder.dll"
+# linux.x86_64.debug = "res://addons/h264_decoder/bin/linux/libh264_decoder.so"
+# linux.x86_64.release = "res://addons/h264_decoder/bin/linux/libh264_decoder.so"
+# windows.x86_64.debug = "res://addons/h264_decoder/bin/windows/h264_decoder.dll"
+# windows.x86_64.release = "res://addons/h264_decoder/bin/windows/h264_decoder.dll"
 android.arm64.debug = "res://addons/h264_decoder/bin/android/libh264_decoder.arm64.so"
 android.arm64.release = "res://addons/h264_decoder/bin/android/libh264_decoder.arm64.so"
+
+[dependencies]
+android.arm64 = {
+    "res://addons/h264_decoder/bin/android/libavcodec.so": "",
+    "res://addons/h264_decoder/bin/android/libavutil.so": "",
+    "res://addons/h264_decoder/bin/android/libswscale.so": "",
+    "res://addons/h264_decoder/bin/android/libavformat.so": "",
+    "res://addons/h264_decoder/bin/android/libavfilter.so": "",
+    "res://addons/h264_decoder/bin/android/libswresample.so": ""
+}

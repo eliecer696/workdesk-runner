@@ -216,6 +216,8 @@ func _handle_frame(bytes: PackedByteArray) -> void:
 	
 	# Skip P-frames until we get a keyframe (for H.264)
 	if _waiting_for_keyframe and not is_keyframe:
+		if _frame_count % 60 == 0:
+			print("[DesktopClient] Waiting for keyframe... (received P-frame)")
 		return
 	
 	# Decode the image - try H.264 first, then JPEG
@@ -230,12 +232,21 @@ func _handle_frame(bytes: PackedByteArray) -> void:
 			var h: int = _h264_decoder.get_height()
 			image = Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba_data)
 			decode_success = true
-		elif is_keyframe:
-			# Reset decoder on keyframe decode failure
-			_h264_decoder.reset()
+			# print("Decoded H.264 frame: %dx%d" % [w, h])
+		else:
+			print("[DesktopClient] H.264 decode returned empty (FrameType: %d, Size: %d)" % [frame_type, frame_data.size()])
+			if is_keyframe:
+				# Reset decoder on keyframe decode failure
+				print("[DesktopClient] Keyframe decode failed, resetting decoder")
+				_h264_decoder.reset()
 	
 	# Fallback to JPEG if H.264 failed or not available
 	if not decode_success:
+		# If we expected H.264 but got here, it's likely a failure.
+		# But if we aren't using H264, this is normal path.
+		if _use_h264:
+			print("Fallback to JPEG/PNG (H.264 failed or empty)")
+			
 		var err := image.load_jpg_from_buffer(frame_data)
 		if err != OK:
 			err = image.load_png_from_buffer(frame_data)

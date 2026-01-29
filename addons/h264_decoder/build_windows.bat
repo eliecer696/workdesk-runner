@@ -14,18 +14,18 @@ if not exist "godot-cpp" (
 )
 
 REM Check for FFmpeg
-if not exist "ffmpeg" (
+REM Check for FFmpeg
+if not exist "ffmpeg_windows" (
     echo.
-    echo ERROR: FFmpeg not found!
-    echo Please copy FFmpeg include/lib folders to: %CD%\ffmpeg
-    echo Or set FFMPEG_PATH environment variable.
-    echo.
-    echo You can extract the FFmpeg from: ..\ffmpeg-temp\ffmpeg-5.1.2-full_build-shared
-    echo   - Copy the 'include' folder
-    echo   - Copy the 'lib' folder
+    echo ERROR: FFmpeg not found at ffmpeg_windows!
+    echo Please run setup_deps.ps1 first.
     pause
     exit /b 1
 )
+
+REM Set path for SCons
+set FFMPEG_PATH=ffmpeg_windows
+set FFMPEG_LIBS=avcodec.lib;avutil.lib;swscale.lib
 
 REM Build godot-cpp first
 echo Building godot-cpp...
