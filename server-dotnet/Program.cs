@@ -38,7 +38,21 @@ internal static class Program
 
     // Win32 imports
     private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
-// ...
+    private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+    private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X, Y; }
+
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT lpPoint);
+    [DllImport("user32.dll")] private static extern bool SetCursorPos(int X, int Y);
+    [DllImport("user32.dll")] private static extern int GetSystemMetrics(int nIndex);
+    [DllImport("user32.dll")] private static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DATA TYPES
+    // ═══════════════════════════════════════════════════════════════════════════
     private record CapturedFrame(byte[] Data, int Width, int Height, float CursorU, float CursorV, long FrameNumber);
     private record EncodedFrame(byte[] Data, float CursorU, float CursorV, bool IsKeyFrame, long FrameNumber);
     // AudioFrame is defined in AudioCapture.cs
