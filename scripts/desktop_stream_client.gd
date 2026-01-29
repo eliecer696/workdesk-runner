@@ -49,12 +49,14 @@ func _ready() -> void:
 	if ClassDB.class_exists("H264Decoder"):
 		_h264_decoder = ClassDB.instantiate("H264Decoder")
 		if _h264_decoder:
-			print("[DesktopClient] H264Decoder extension loaded")
+			print("[DesktopClient] H264Decoder extension loaded successfully")
+			if _h264_decoder.has_method("initialize"):
+				_h264_decoder.initialize()
 		else:
-			print("[DesktopClient] Failed to create H264Decoder, using JPEG fallback")
+			print("[DesktopClient] Failed to instantiate H264Decoder")
 			_use_h264 = false
 	else:
-		print("[DesktopClient] H264Decoder extension not found, using JPEG fallback")
+		print("[DesktopClient] H264Decoder class not found - using JPEG fallback")
 		_use_h264 = false
 	
 	if auto_connect:

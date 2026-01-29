@@ -41,14 +41,25 @@ jobs:
         run: |
           cd addons/h264_decoder
           mkdir -p ffmpeg/include ffmpeg/lib
-          # Download FFmpeg Android builds from ffmpeg-kit
-          wget -q https://github.com/AmbigapiSoftware/ffmpeg-android-maker/releases/download/v1.0/ffmpeg-android-arm64-v8a.tar.gz || true
-          if [ -f ffmpeg-android-arm64-v8a.tar.gz ]; then
-            tar -xzf ffmpeg-android-arm64-v8a.tar.gz -C ffmpeg
-          else
-            echo "FFmpeg Android download failed, skipping Android build"
-            exit 1
-          fi
+          # Download FFmpeg Android builds from Khang-NT/ffmpeg-binary-android (reliable source)
+          # Using version 4.4.1 (API 24+) headers + arm64 .so
+          
+          # 1. Download Libraries (arm64-v8a)
+          wget -q https://github.com/Khang-NT/ffmpeg-binary-android/releases/download/2022-08-16/ffmpeg-android-arm64-v8a.zip
+          unzip -q ffmpeg-android-arm64-v8a.zip -d ffmpeg-temp
+          
+          # Move .so files
+          mkdir -p ffmpeg/lib
+          cp ffmpeg-temp/ffmpeg-android-arm64-v8a/lib/*.so ffmpeg/lib/
+          
+          # 2. Download Headers (common)
+          wget -q https://github.com/Khang-NT/ffmpeg-binary-android/releases/download/2022-08-16/ffmpeg-android-arm64-v8a.zip -O headers.zip
+          unzip -q headers.zip -d headers-temp
+          mkdir -p ffmpeg/include
+          cp -r headers-temp/ffmpeg-android-arm64-v8a/include/* ffmpeg/include/
+          
+          # Cleanup
+          rm -rf ffmpeg-temp headers-temp *.zip
       
       - name: Build godot-cpp for Android
         run: |
