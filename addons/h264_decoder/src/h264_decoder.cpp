@@ -116,6 +116,8 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
         }
     }
 
+    // UtilityFunctions::print("[H264] Decode start. Bytes: ", h264_data.size());
+
     // Set packet data
     packet->data = const_cast<uint8_t*>(h264_data.ptr());
     packet->size = h264_data.size();
@@ -123,7 +125,7 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
     // Send packet to decoder
     int ret = avcodec_send_packet(codec_ctx, packet);
     if (ret < 0 && ret != AVERROR(EAGAIN)) {
-        // Not an error if decoder needs more data
+        UtilityFunctions::printerr("[H264] Send packet failed: ", ret);
         if (ret != AVERROR_EOF) {
             return result;
         }
@@ -132,17 +134,19 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
     // Receive decoded frame
     ret = avcodec_receive_frame(codec_ctx, frame);
     if (ret < 0) {
-        // EAGAIN means we need to send more packets
-        // This is normal for the first few frames
+        if (ret != AVERROR(EAGAIN)) {
+            UtilityFunctions::printerr("[H264] Receive frame failed: ", ret);
+        }
         return result;
     }
 
-    // Update dimensions if changed
-    if (frame->width != width || frame->height != height) {
+    // UtilityFunctions::print("[H264] Got frame: ", frame->width, "x", frame->height, " fmt:", frame->format);
+
+    // Update dimensions and scaler if needed
+    if (frame->width != width || frame->height != height || !sws_ctx) {
         width = frame->width;
         height = frame->height;
         
-        // Recreate scaler
         if (sws_ctx) {
             sws_freeContext(sws_ctx);
         }
@@ -150,28 +154,38 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
         sws_ctx = sws_getContext(
             width, height, (AVPixelFormat)frame->format,
             width, height, AV_PIX_FMT_RGBA,
-            SWS_FAST_BILINEAR, nullptr, nullptr, nullptr
+            SWS_BILINEAR, nullptr, nullptr, nullptr
         );
         
         if (!sws_ctx) {
-            UtilityFunctions::printerr("[H264Decoder] Failed to create scaler");
+            UtilityFunctions::printerr("[H264] Failed to create scaler");
             return result;
         }
         
-        // Allocate RGB buffer
-        int buffer_size = av_image_get_buffer_size(AV_PIX_FMT_RGBA, width, height, 32);
+        // Resize buffer only when dim changes
+        int buffer_size = av_image_get_buffer_size(AV_PIX_FMT_RGBA, width, height, 1); // Align 1 for tight packing
         rgb_buffer.resize(buffer_size);
-        UtilityFunctions::print("[H264Decoder] Frame size: ", width, "x", height);
+        UtilityFunctions::print("[H264] Resized buffer to: ", buffer_size);
     }
 
-    // SAFETY FIX: Fill arrays every frame to ensure pointers are valid
-    // Godot's PackedByteArray might move in memory, so we must invoke ptrw() fresh.
+    // SAFETY: Re-fill arrays every time because Godot's PackedByteArray ptrW can change
+    // Also using alignment 1 to match Godot's packed expectation if needed, though 32 is usually safer for FFmpeg.
+    // Let's force 1 for safety with pure byte array copying? No, 32 is standard.
+    // Ensure the resize was sufficient.
+    int buffer_size = av_image_get_buffer_size(AV_PIX_FMT_RGBA, width, height, 1);
+    
+    // Check buffer size
+    if (rgb_buffer.size() < buffer_size) {
+         rgb_buffer.resize(buffer_size);
+    }
+
     av_image_fill_arrays(
         frame_rgb->data, frame_rgb->linesize,
         rgb_buffer.ptrw(), AV_PIX_FMT_RGBA,
-        width, height, 32
+        width, height, 1
     );
 
+    // UtilityFunctions::print("[H264] Scaling...");
     // Convert to RGBA
     sws_scale(sws_ctx,
         frame->data, frame->linesize, 0, height,
@@ -181,6 +195,12 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
     // Copy to output buffer (RGBA, 4 bytes per pixel)
     int output_size = width * height * 4;
     result.resize(output_size);
+    if (result.size() != output_size) {
+          UtilityFunctions::printerr("[H264] Result resize failed");
+          return result;
+    }
+    
+    // UtilityFunctions::print("[H264] Copying to result...");
     memcpy(result.ptrw(), rgb_buffer.ptr(), output_size);
 
     return result;
