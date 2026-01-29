@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'addons/h264_decoder/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 env:
@@ -41,24 +42,47 @@ jobs:
         run: |
           cd addons/h264_decoder
           mkdir -p ffmpeg/include ffmpeg/lib
-          # Download FFmpeg Android builds from Javernaut/ffmpeg-android-maker (reliable maintained source)
-          # Using version 6.0 (API 24+)
+          # Download FFmpeg Android builds from Javernaut/ffmpeg-android-maker
+          # Using version 6.0
           
-          # 1. Download Libraries & Headers (universal tar.gz)
           wget -q https://github.com/Javernaut/ffmpeg-android-maker/releases/download/6.0/ffmpeg-android-6.0.tar.gz
-          tar -xzf ffmpeg-android-6.0.tar.gz
           
-          # Move files to expected structure
-          mkdir -p ffmpeg/lib ffmpeg/include
+          # Extract to temp dir to avoid conflicts
+          mkdir -p temp_extract
+          tar -xzf ffmpeg-android-6.0.tar.gz -C temp_extract
           
-          # Copy arm64-v8a libs
-          cp -r output/lib/arm64-v8a/* ffmpeg/lib/
+          # Check extraction structure (handle potential root folder)
+          if [ -d "temp_extract/ffmpeg-android-6.0" ]; then
+            cd temp_extract/ffmpeg-android-6.0
+          else
+            cd temp_extract
+          fi
           
-          # Copy includes (from any arch, they are identical)
-          cp -r output/include/* ffmpeg/include/
+          # Now in the root of extracted files, copy to destination
+          # Assumption: structure has 'lib/arm64-v8a' and 'include'
+          
+          # Move back to project root context for copy
+          cd ../../
+          
+          # Copy libs
+          # If output folder exists (Javernaut style sometimes) or just lib
+          if [ -d "temp_extract/output/lib" ]; then
+             cp -r temp_extract/output/lib/arm64-v8a/* ffmpeg/lib/
+             cp -r temp_extract/output/include/* ffmpeg/include/
+          elif [ -d "temp_extract/lib/arm64-v8a" ]; then
+             cp -r temp_extract/lib/arm64-v8a/* ffmpeg/lib/
+             cp -r temp_extract/include/* ffmpeg/include/
+          elif [ -d "temp_extract/ffmpeg-android-6.0/lib/arm64-v8a" ]; then
+             cp -r temp_extract/ffmpeg-android-6.0/lib/arm64-v8a/* ffmpeg/lib/
+             cp -r temp_extract/ffmpeg-android-6.0/include/* ffmpeg/include/
+          else
+             echo "Unknown structure in tarball"
+             ls -R temp_extract
+             exit 1
+          fi
           
           # Cleanup
-          rm -rf output ffmpeg-android-6.0.tar.gz
+          rm -rf temp_extract ffmpeg-android-6.0.tar.gz
       
       - name: Build godot-cpp for Android
         run: |
