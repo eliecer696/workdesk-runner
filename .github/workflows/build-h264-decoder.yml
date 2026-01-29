@@ -66,11 +66,15 @@ jobs:
         with:
           python-version: '3.11'
       
-      - name: Install dependencies
-        run: |
-          pip install scons
-          sudo apt-get update
-          sudo apt-get install -y android-sdk-platform-tools android-ndk-r25c
+      - name: Install SCons
+        run: pip install scons
+      
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r25c
+          add-to-path: true
       
       - name: Clone godot-cpp
         run: |
@@ -81,14 +85,21 @@ jobs:
         run: |
           cd addons/h264_decoder
           mkdir -p ffmpeg/include ffmpeg/lib
-          # Download pre-built FFmpeg for Android ARM64
-          wget https://github.com/AdrianAndroid/FFmpegPlayer/releases/download/v1.0/ffmpeg-android-arm64-v8a.tar.gz
-          tar -xzf ffmpeg-android-arm64-v8a.tar.gz -C ffmpeg
+          # Download FFmpeg Android builds from ffmpeg-kit
+          wget -q https://github.com/AmbigapiSoftware/ffmpeg-android-maker/releases/download/v1.0/ffmpeg-android-arm64-v8a.tar.gz || true
+          if [ -f ffmpeg-android-arm64-v8a.tar.gz ]; then
+            tar -xzf ffmpeg-android-arm64-v8a.tar.gz -C ffmpeg
+          else
+            echo "FFmpeg Android download failed, skipping Android build"
+            exit 1
+          fi
       
       - name: Build godot-cpp for Android
         run: |
           cd addons/h264_decoder/godot-cpp
           scons platform=android arch=arm64 target=template_release
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
       
       - name: Build extension for Android
         run: |
@@ -96,7 +107,7 @@ jobs:
           scons platform=android arch=arm64 target=template_release
         env:
           FFMPEG_PATH: ffmpeg
-          ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/25.2.9519653
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
       
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
