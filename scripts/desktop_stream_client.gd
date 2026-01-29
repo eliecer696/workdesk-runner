@@ -286,7 +286,7 @@ func _handle_audio_packet(bytes: PackedByteArray) -> void:
 	var available_bytes := bytes.size() - 1
 	var sample_count := available_bytes / 8 # 4 bytes/float * 2 channels
 	
-	# print("[Audio] Received packet, size: ", bytes.size(), ", samples: ", sample_count)
+	print("[Audio] Packet: %d bytes, %d samples" % [bytes.size(), sample_count])
 	
 	if sample_count <= 0:
 		return
@@ -305,7 +305,7 @@ func _handle_audio_packet(bytes: PackedByteArray) -> void:
 	# Push to audio server
 	if _audio_playback.get_frames_available() >= sample_count:
 		_audio_playback.push_buffer(buffer)
-		# print("[Audio] Pushed buffer")
+		print("[Audio] Pushed buffer")
 
 func _get_error_name(err: int) -> String:
 	match err:
@@ -350,9 +350,11 @@ func _handle_frame(bytes: PackedByteArray) -> void:
 	# Parse header on main thread (very fast)
 	var frame_type := bytes[0] # 0 = P-frame, 1 = I-frame, 2 = Audio
 	
+	print("[Net] Packet Type: ", frame_type, " Size: ", bytes.size())
+
 	# HANDLE AUDIO PACKET
 	if frame_type == 2:
-		_handle_audio_packet(bytes)
+		# _handle_audio_packet(bytes)
 		return
 
 	var cursor_u: float = bytes.decode_float(1)
