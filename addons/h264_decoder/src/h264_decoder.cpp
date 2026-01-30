@@ -188,91 +188,75 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
 
     result.resize(total_size);
     uint8_t* dst = result.ptrw();
+    uint8_t* uv_dst_start = dst + y_size;
 
-    // Copy Y Plane (Plane 0 is always Y in these formats)
+    // 1. Copy Y Plane (Plane 0 is always Y)
     if (frame->data[0]) {
         for (int i = 0; i < height; i++) {
             memcpy(dst + (i * width), frame->data[0] + (i * frame->linesize[0]), width);
         }
     }
 
-    // Handle UV Planes based on Format
-    // Target Layout: [ U Plane (Left) | V Plane (Right) ] at bottom
-    uint8_t* uv_dst_start = dst + y_size;
-
-    // ANTI-GREEN FILTER:
-    // P-frames sometimes have Valid Y but Zero U/V (Green).
-    // We check a few pixels. If they are all 0, we FORCE Grey (128).
+    // 2. Determine Invalidity (Green Screen check)
+    // If planes are missing OR all zeros, we must force Grey.
+    bool u_missing = !frame->data[1];
+    bool v_missing = !frame->data[2] && (frame->format != AV_PIX_FMT_NV12 && frame->format != AV_PIX_FMT_NV21);
     
     bool u_invalid = false;
     bool v_invalid = false;
     
-    if (frame->data[1]) {
-        // Check 4 points: start, mid, 3/4, end
+    if (!u_missing) {
         int step = frame->linesize[1] * uv_height / 4;
         if (frame->data[1][0] == 0 && frame->data[1][step] == 0) u_invalid = true;
     }
-    if (frame->data[2]) {
+    if (!v_missing && frame->data[2]) {
         int step = frame->linesize[2] * uv_height / 4;
         if (frame->data[2][0] == 0 && frame->data[2][step] == 0) v_invalid = true;
     }
 
-    // Safety Init: Default to Grey if invalid
-    if (u_invalid || v_invalid) {
+    // 3. NUCLEAR ACTION: Pre-fill UV with Grey if anything is fishy
+    // We use || because if either color channel is dead, the image is distorted.
+    if (u_missing || v_missing || u_invalid || v_invalid) {
          memset(uv_dst_start, 128, uv_size * 2);
     }
 
-    // Check for standard Planar YUV (YUV420P, YUVJ420P)
-    // Format 0 = YUV420P, 12 = YUVJ420P
+    // 4. Coping based on format
     if (frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUVJ420P) {
-        if (frame->data[1] && frame->data[2]) {
-            // DEBUG: print plane pointers
-            // UtilityFunctions::print("[H264Decoder] Copying Planes U:", (int64_t)frame->data[1], " V:", (int64_t)frame->data[2]);
-            
+        if (!u_missing && !v_missing) {
             for (int i = 0; i < uv_height; i++) {
                 uint8_t* row_dst = uv_dst_start + (i * width);
-                uint8_t* u_src = frame->data[1] + (i * frame->linesize[1]);
-                uint8_t* v_src = frame->data[2] + (i * frame->linesize[2]);
-                
-                memcpy(row_dst, u_src, uv_width);
-                memcpy(row_dst + uv_width, v_src, uv_width);
+                memcpy(row_dst, frame->data[1] + (i * frame->linesize[1]), uv_width);
+                memcpy(row_dst + uv_width, frame->data[2] + (i * frame->linesize[2]), uv_width);
             }
-        } else {
-             UtilityFunctions::print("[H264Decoder] YUV420P but MISSING chrominance planes! (Green prevented by grey fill)");
         }
     } 
-    // Check for Semi-Planar NV12 (Y, then UVUVUV) or NV21 (Y, then VUVUVU)
-    // NV12 = 23, NV21 = 24 (approx)
     else if (frame->format == AV_PIX_FMT_NV12 || frame->format == AV_PIX_FMT_NV21) {
-        // NV12: Plane 1 contains UVUVUV...
-        if (frame->data[1]) {
+        if (!u_missing) {
             bool is_nv12 = (frame->format == AV_PIX_FMT_NV12);
-            
             for (int i = 0; i < uv_height; i++) {
                 uint8_t* row_dst = uv_dst_start + (i * width);
                 uint8_t* uv_src_row = frame->data[1] + (i * frame->linesize[1]);
-                
-                // De-interleave UV
                 for (int x = 0; x < uv_width; x++) {
-                    uint8_t b1 = uv_src_row[x * 2];
-                    uint8_t b2 = uv_src_row[x * 2 + 1];
-                    
-                    uint8_t u_val = is_nv12 ? b1 : b2;
-                    uint8_t v_val = is_nv12 ? b2 : b1;
-                    
-                    // Write to U (Left) and V (Right)
-                    row_dst[x] = u_val;
-                    row_dst[uv_width + x] = v_val;
+                    row_dst[x] = is_nv12 ? uv_src_row[x * 2] : uv_src_row[x * 2 + 1];
+                    row_dst[uv_width + x] = is_nv12 ? uv_src_row[x * 2 + 1] : uv_src_row[x * 2];
                 }
             }
         }
     }
+    else if (frame->format == AV_PIX_FMT_YUV422P || frame->format == AV_PIX_FMT_YUVJ422P) {
+        // Sample every other row for 420 conversion
+        if (!u_missing && !v_missing) {
+            for (int i = 0; i < uv_height; i++) {
+                uint8_t* row_dst = uv_dst_start + (i * width);
+                memcpy(row_dst, frame->data[1] + (i * 2 * frame->linesize[1]), uv_width);
+                memcpy(row_dst + uv_width, frame->data[2] + (i * 2 * frame->linesize[2]), uv_width);
+            }
+        }
+    }
     else {
-        // Unknown format - UV already filled with 128 (Grey) above.
-        static bool warned = false;
-        if (!warned) {
-             UtilityFunctions::printerr("[H264Decoder] Unsupported format: ", (int)frame->format, " Filling UV with grey.");
-             warned = true;
+        static int warn_count = 0;
+        if (warn_count++ % 100 == 0) {
+             UtilityFunctions::printerr("[H264Decoder] Unknown frame format: ", (int)frame->format);
         }
     }
 

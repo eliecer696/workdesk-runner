@@ -94,14 +94,14 @@ internal static class Program
         Console.WriteLine("╚══════════════════════════════════════════════════════════════╝");
 
         // Create async channels for pipeline
-        _captureChannel = Channel.CreateBounded<CapturedFrame>(new BoundedChannelOptions(3)
+        _captureChannel = Channel.CreateBounded<CapturedFrame>(new BoundedChannelOptions(120)
         {
             FullMode = BoundedChannelFullMode.DropOldest,
             SingleReader = true,
             SingleWriter = true
         });
 
-        _encodeChannel = Channel.CreateBounded<EncodedFrame>(new BoundedChannelOptions(3)
+        _encodeChannel = Channel.CreateBounded<EncodedFrame>(new BoundedChannelOptions(120)
         {
             FullMode = BoundedChannelFullMode.DropOldest,
             SingleReader = true,
@@ -163,6 +163,7 @@ internal static class Program
         
         // Request keyframe for new client
         _requestKeyframe = true;
+        Console.WriteLine($"[Server] Keyframe requested for new client {id}");
 
         await ReceiveLoopAsync(socket, id);
     }
@@ -210,6 +211,7 @@ internal static class Program
                     if (Clients.TryGetValue(clientId, out var client))
                         client.NeedsKeyframe = true;
                     _requestKeyframe = true;
+                    Console.WriteLine($"[Server] Force keyframe requested by client {clientId}");
                     break;
             }
         }
@@ -267,10 +269,12 @@ internal static class Program
                         (_dxgiCapture?.Height ?? screenBounds.Height) * 4;
         
         Console.WriteLine("[Capture] Loop started");
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(1000.0 / TargetFps));
 
-        while (!ct.IsCancellationRequested)
+        while (await timer.WaitForNextTickAsync(ct))
         {
-            stopwatch.Restart();
+            // stopwatch.Restart();
+
 
             if (Clients.Count > 0)
             {
@@ -366,9 +370,7 @@ internal static class Program
                 }
             }
 
-            var elapsed = stopwatch.Elapsed.TotalMilliseconds;
-            var delay = Math.Max(1, frameIntervalMs - elapsed);
-            await Task.Delay((int)delay, ct);
+            // PeriodicTimer handles the delay now
         }
 
         _dxgiCapture?.Dispose();
@@ -433,7 +435,10 @@ internal static class Program
                     if (_h264Encoder != null)
                     {
                         var forceKey = _requestKeyframe;
-                        _requestKeyframe = false;
+                        if (forceKey) { 
+                             _requestKeyframe = false;
+                             Console.WriteLine("[Encode] Encoding forced KEYFRAME");
+                        }
                         
                         encodedData = _h264Encoder.EncodeFrame(frame.Data, forceKey);
                         isKeyFrame = _h264Encoder.IsKeyFrame;
@@ -450,7 +455,12 @@ internal static class Program
                 if (encodedData != null)
                 {
                     var encoded = new EncodedFrame(encodedData, frame.CursorU, frame.CursorV, isKeyFrame, frame.FrameNumber);
-                    await _encodeChannel!.Writer.WriteAsync(encoded, ct);
+                    if (!_encodeChannel!.Writer.TryWrite(encoded))
+                    {
+                        // This shouldn't happen with capacity 120 unless network is REALLY dead, but good for debug
+                        // Console.WriteLine("[Encode] Warning: Encode channel full, dropped oldest frame");
+                        await _encodeChannel!.Writer.WriteAsync(encoded, ct);
+                    }
                     
                     _encodedCount++;
 
@@ -529,10 +539,9 @@ internal static class Program
                 sendTasks.Add(SendToClientAsync(client, payload, frame.FrameNumber));
             }
             
-            _sentCount++;
-
             if (sendTasks.Count > 0)
             {
+                _sentCount++;
                 await Task.WhenAll(sendTasks);
             }
         }

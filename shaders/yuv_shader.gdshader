@@ -53,49 +53,31 @@ void fragment() {
 		float v_raw = texture(yuv_tex, vec2(v_uv_x, chrom_uv_y)).r;
 		float v = v_raw - 0.5;
 
-        // GREEN SCREEN FIX:
-        // If U and V are exactly 0.0 (from a zero-initialized texture), the result is GREEN.
-        // We detect this (raw value near 0) and force it to Grey (0.5 - 0.5 = 0.0).
-        if (u_raw < 0.01 && v_raw < 0.01) {
-            u = 0.0;
-            v = 0.0;
+        // NUCLEAR GREEN MASK:
+        // If EITHER U or V is low (< 0.45), we assume color data is garbage (Green Screen).
+        // By using || (OR), we catch cases where only one plane is zeroed.
+        bool masked = false;
+        if (u_raw < 0.45 || v_raw < 0.45) {
+            u_raw = 0.5; // Force Neutral grey
+            v_raw = 0.5; // Force Neutral grey
+            masked = true;
         }
 		
-		// Convert from Limited Range (16-235) to Full Range (0-255)
-		// Y: (val - 16/255) / (219/255)
-		// UV: (val - 128/255) / (224/255) ... (since texture samples 0-1, 0.5 is center)
-		
+		// 1. Shift to center zero
 		float y_adj = (y - 0.0625) * 1.16438;
-		float u_adj = (u - 0.5) * 1.13839; // Correction factor for limited range chroma might differ, simplified here
-		float v_adj = (v - 0.5) * 1.13839;
-		
-		// BT.709 Coefficients (HD Standard)
-		// R = Y + 1.5748 * V
-		// G = Y - 0.1873 * U - 0.4681 * V
-		// B = Y + 1.8556 * U
-		
-		// Note: The y_adj already includes the 1.164 contrast stretch shared by all.
-		// Standard integer math is: R = 1.164(Y-16) + 1.793(V-128)
-		// Let's stick to the direct float approximation for restricted range BT.709:
-		
-		// Re-calculating with standard formula:
-		// R = 1.164 * (y - 16/255) + 1.793 * (v - 0.5)
-		// G = 1.164 * (y - 16/255) - 0.213 * (u - 0.5) - 0.533 * (v - 0.5)
-		// B = 1.164 * (y - 16/255) + 2.112 * (u - 0.5)
-		
-		// Using pre-adjusted Y (brightness/contrast fixed)
-		y = (y - 0.0625) * 1.164;
-		u = u - 0.5;
-		v = v - 0.5;
-		
+		float u_adj = u_raw - 0.5;
+		float v_adj = v_raw - 0.5;
 
-		float r = y + 1.793 * v;
-		float g = y - 0.213 * u - 0.533 * v;
-		float b = y + 2.112 * u;
+		// 2. BT.709 Standard Matrix (Limited Range conversion fold-in)
+		float r = y_adj + 1.793 * v_adj;
+		float g = y_adj - 0.213 * u_adj - 0.533 * v_adj;
+		float b = y_adj + 2.112 * u_adj;
 
-		vec3 rgb = vec3(r, g, b);
+		vec3 rgb = clamp(vec3(r, g, b), 0.0, 1.0);
+		
+		// 3. Saturation Boost
 		vec3 hsv = rgb2hsv(rgb);
-		hsv.y *= saturation; // Boost saturation
+		hsv.y *= saturation; 
 		ALBEDO = hsv2rgb(hsv);
 	}
 }

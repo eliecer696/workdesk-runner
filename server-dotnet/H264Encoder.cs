@@ -114,7 +114,10 @@ public sealed unsafe class H264Encoder : IDisposable
         _codecContext->bit_rate = bitrateMbps * 1_000_000L;
         _codecContext->gop_size = fps; // Keyframe every 1 second
         _codecContext->max_b_frames = 0; // No B-frames for lower latency
-        _codecContext->thread_count = 0; // Auto
+        _codecContext->thread_count = 1; // 1 thread for lowest latency (no inter-thread sync)
+        _codecContext->flags |= ffmpeg.AV_CODEC_FLAG_LOW_DELAY;
+        // _codecContext->flags |= ffmpeg.AV_CODEC_FLAG_GLOBAL_HEADER; // Removed: We need SPS/PPS in every I-frame for live streaming
+        _codecContext->flags2 |= ffmpeg.AV_CODEC_FLAG2_FAST;
 
         // Low latency settings
         AVDictionary* opts = null;
@@ -126,6 +129,8 @@ public sealed unsafe class H264Encoder : IDisposable
             ffmpeg.av_dict_set(&opts, "preset", "p1", 0); // Fastest preset
             ffmpeg.av_dict_set(&opts, "tune", "ll", 0); // Low latency tune
             ffmpeg.av_dict_set(&opts, "zerolatency", "1", 0);
+            ffmpeg.av_dict_set(&opts, "delay", "0", 0);
+            ffmpeg.av_dict_set(&opts, "forced-idr", "1", 0);
             ffmpeg.av_dict_set(&opts, "rc", "cbr", 0); // Constant bitrate
         }
         else if (_encoderName == "h264_amf")
