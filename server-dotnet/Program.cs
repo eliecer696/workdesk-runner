@@ -579,6 +579,8 @@ internal static class Program
             // For now, just logging on debug if needed, but keeping it silent to avoid spam
             // Console.WriteLine($"[Send] Error sending to client: {ex.Message}");
         }
+    }
+
     private static async Task AudioLoopAsync(CancellationToken ct)
     {
         Console.WriteLine("[Audio] Loop started (WASAPI Loopback)");

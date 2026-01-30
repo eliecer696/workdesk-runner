@@ -27,11 +27,13 @@ size = Vector3(0.01, 0.01, 1)
 emission_enabled = true
 emission = Color(1, 1, 1, 1)
 
-[sub_resource type="BoxMesh" id="BoxMesh_vcsgt"]
-size = Vector3(0.05, 0.05, 0.05)
+[sub_resource type="SphereMesh" id="SphereMesh_vcsgt"]
+radius = 0.03
+height = 0.03
 
-[sub_resource type="BoxMesh" id="BoxMesh_c01mt"]
-size = Vector3(0.05, 0.05, 0.05)
+[sub_resource type="SphereMesh" id="SphereMesh_c01mt"]
+radius = 0.03
+height = 0.03
 
 [sub_resource type="QuadMesh" id="4"]
 size = Vector2(2.4, 1.35)
@@ -79,7 +81,7 @@ mesh = SubResource("6")
 [node name="Reticle" type="MeshInstance3D" parent="XROrigin3D/LeftController" unique_id=990782335]
 visible = false
 material_override = SubResource("9")
-mesh = SubResource("BoxMesh_vcsgt")
+mesh = SubResource("SphereMesh_vcsgt")
 
 [node name="RightController" type="XRController3D" parent="XROrigin3D" unique_id=916853988]
 tracker = &"right_hand"
@@ -99,7 +101,7 @@ mesh = SubResource("6")
 [node name="Reticle" type="MeshInstance3D" parent="XROrigin3D/RightController" unique_id=2094890208]
 visible = false
 material_override = SubResource("9")
-mesh = SubResource("BoxMesh_c01mt")
+mesh = SubResource("SphereMesh_c01mt")
 
 [node name="ScreenPivot" type="Node3D" parent="." unique_id=1326322949]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.4, -2.5)

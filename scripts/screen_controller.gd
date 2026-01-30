@@ -19,17 +19,17 @@ signal screen_locked(is_locked: bool)
 @export var default_scale: float = 1.0
 @export var min_scale: float = 0.3
 @export var max_scale: float = 3.0
-@export var default_height_offset: float = 0.0  # Relative to camera
+@export var default_height_offset: float = 0.0 # Relative to camera
 
 @export_group("Input Sensitivity")
-@export var distance_speed: float = 2.0  # Units per second
-@export var scale_speed: float = 1.0  # Scale per second
-@export var height_speed: float = 1.0  # Units per second
+@export var distance_speed: float = 2.0 # Units per second
+@export var scale_speed: float = 1.0 # Scale per second
+@export var height_speed: float = 1.0 # Units per second
 @export var move_smoothing: float = 10.0
 @export var thumbstick_deadzone: float = 0.2
 
 @export_group("Recenter")
-@export var recenter_button: String = "menu_button"  # Oculus/Menu button
+@export var recenter_button: String = "menu_button" # Oculus/Menu button
 @export var recenter_hold_time: float = 0.5
 
 var _screen_pivot: Node3D
@@ -40,7 +40,7 @@ var _right_controller: XRController3D
 var _is_locked_to_camera: bool = false
 var _is_grabbing: bool = false
 var _grab_controller: XRController3D = null
-var _grab_offset: Vector3 = Vector3.ZERO
+var _grab_relative_transform: Transform3D = Transform3D.IDENTITY
 
 var _current_distance: float
 var _current_scale: float
@@ -133,10 +133,13 @@ func _handle_grab_input(_delta: float) -> void:
 func _start_grab(controller: XRController3D) -> void:
 	_is_grabbing = true
 	_grab_controller = controller
-	_grab_offset = _screen_pivot.global_position - controller.global_position
+	
+	# Capture relative transform between controller and screen
+	_grab_relative_transform = controller.global_transform.affine_inverse() * _screen_pivot.global_transform
+	
 	_is_locked_to_camera = false
 	emit_signal("screen_locked", false)
-	print("[ScreenController] Started grabbing screen")
+	print("[ScreenController] Started grabbing screen (Pivot: Controller)")
 
 func _end_grab() -> void:
 	_is_grabbing = false
@@ -147,12 +150,11 @@ func _end_grab() -> void:
 
 func _update_grab_position(_delta: float) -> void:
 	if _grab_controller and _screen_pivot:
-		var new_pos := _grab_controller.global_position + _grab_offset
-		_screen_pivot.global_position = new_pos
-		_target_position = new_pos
+		# Screen follows the controller's transform perfectly (position + rotation)
+		_screen_pivot.global_transform = _grab_controller.global_transform * _grab_relative_transform
+		_target_position = _screen_pivot.global_position
 		
-		# Make screen face the camera while grabbing
-		_face_camera()
+		# Removed _face_camera() during grab so the user has full rotation control
 
 func _handle_thumbstick_input(delta: float) -> void:
 	if not _right_controller:
@@ -213,9 +215,9 @@ func _face_camera() -> void:
 	
 	# Make screen face the camera
 	var look_target := _xr_camera.global_position
-	look_target.y = _screen_pivot.global_position.y  # Keep upright
+	look_target.y = _screen_pivot.global_position.y # Keep upright
 	_screen_pivot.look_at(look_target, Vector3.UP)
-	_screen_pivot.rotate_y(PI)  # Flip to face camera
+	_screen_pivot.rotate_y(PI) # Flip to face camera
 
 func recenter_screen() -> void:
 	print("[ScreenController] Recentering screen")
