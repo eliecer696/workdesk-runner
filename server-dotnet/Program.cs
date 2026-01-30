@@ -18,7 +18,7 @@ internal static class Program
     // ═══════════════════════════════════════════════════════════════════════════
     private const int Port = 9000;
     private const int TargetFps = 60;           // Match monitor refresh rate as requested
-    private const int BitrateMbps = 15;         // H.264 bitrate (adjustable 20-150)
+    private const int BitrateMbps = 12;         // Reduced from 15 to 12 for better stability
     private const int MaxClients = 4;
     private const bool UseHardwareCapture = true;   // DXGI vs GDI+
     private const bool UseH264Encoding = true;      // H.264 vs JPEG fallback
@@ -465,7 +465,7 @@ internal static class Program
                     _encodedCount++;
 
                     _frameCount++;
-                    if (_frameCount % 300 == 1)
+                    if (_frameCount % 600 == 1)
                     {
                         Console.WriteLine($"[Encode] Frame #{_frameCount}, size: {encodedData.Length} bytes, " +
                             $"key: {isKeyFrame}, time: {stopwatch.ElapsedMilliseconds}ms");

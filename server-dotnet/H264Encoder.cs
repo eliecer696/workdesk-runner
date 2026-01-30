@@ -112,7 +112,7 @@ public sealed unsafe class H264Encoder : IDisposable
         _codecContext->framerate = new AVRational { num = fps, den = 1 };
         _codecContext->pix_fmt = AVPixelFormat.AV_PIX_FMT_YUV420P;
         _codecContext->bit_rate = bitrateMbps * 1_000_000L;
-        _codecContext->gop_size = fps; // Keyframe every 1 second
+        _codecContext->gop_size = fps * 10; // Keyframe every 10 seconds (GOP 600)
         _codecContext->max_b_frames = 0; // No B-frames for lower latency
         _codecContext->thread_count = 1; // 1 thread for lowest latency (no inter-thread sync)
         _codecContext->flags |= ffmpeg.AV_CODEC_FLAG_LOW_DELAY;

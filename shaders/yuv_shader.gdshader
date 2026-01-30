@@ -4,7 +4,10 @@ render_mode unshaded, cull_disabled;
 // Texture containing either RGB image or Packed YUV data
 uniform sampler2D yuv_tex : filter_linear, repeat_disable;
 uniform bool is_yuv = false;
-uniform float saturation : hint_range(0.0, 2.0) = 1.2; // Default 20% boost
+uniform float saturation : hint_range(0.0, 2.0) = 1.2;
+uniform bool use_full_range = true;
+uniform float contrast = 1.1;
+uniform float brightness = 0.0;
 
 vec3 rgb2hsv(vec3 c) {
     vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
@@ -61,21 +64,36 @@ void fragment() {
             v_raw = 0.5; 
         }
 		
-		// 1. Shift to center zero
-		float y_adj = (y - 0.0625) * 1.16438;
-		float u_adj = u_raw - 0.5;
-		float v_adj = v_raw - 0.5;
+		// 1. Shift and Scale based on Range
+		float y_adj, u_adj, v_adj;
+		
+		if (use_full_range) {
+			y_adj = y;
+			u_adj = u_raw - 0.5;
+			v_adj = v_raw - 0.5;
+		} else {
+			y_adj = (y - 0.0625) * 1.16438;
+			u_adj = (u_raw - 0.5) * 1.138392;
+			v_adj = (v_raw - 0.5) * 1.138392;
+		}
 
-		// 2. BT.709 Standard Matrix (Limited Range conversion fold-in)
-		float r = y_adj + 1.793 * v_adj;
-		float g = y_adj - 0.213 * u_adj - 0.533 * v_adj;
-		float b = y_adj + 2.112 * u_adj;
+		// 2. BT.709 Standard Matrix (Precise)
+		float r = y_adj + 1.5748 * v_adj;
+		float g = y_adj - 0.1873 * u_adj - 0.4681 * v_adj;
+		float b = y_adj + 1.8556 * u_adj;
 
 		vec3 rgb = clamp(vec3(r, g, b), 0.0, 1.0);
 		
-		// 3. Saturation Boost
-		vec3 hsv = rgb2hsv(rgb);
+		// 3. Contrast / Brightness Tuning
+		rgb = (rgb - 0.5) * contrast + 0.5 + brightness;
+		
+		// 4. Saturation
+		vec3 hsv = rgb2hsv(clamp(rgb, 0.0, 1.0));
 		hsv.y *= saturation; 
-		ALBEDO = hsv2rgb(hsv);
+		rgb = hsv2rgb(hsv);
+		
+		// 5. GAMMA TO LINEAR: Godot 4 expects ALBEDO in Linear space.
+		// Video is Gamma space. If we don't pow(2.2) here, Godot "lifts" it, making it look washed out.
+		ALBEDO = pow(clamp(rgb, 0.0, 1.0), vec3(2.2));
 	}
 }

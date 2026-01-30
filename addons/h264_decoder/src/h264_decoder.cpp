@@ -104,7 +104,7 @@ bool H264Decoder::initialize(int expected_width, int expected_height) {
     // Configure for low latency
     codec_ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
     codec_ctx->flags2 |= AV_CODEC_FLAG2_FAST;
-    codec_ctx->thread_count = 1; // 1 thread for lowest latency (no inter-thread buffer delay)
+    codec_ctx->thread_count = 0; // Auto-threading for better I-frame handling on mobile
     codec_ctx->thread_type = FF_THREAD_SLICE;
 
     if (avcodec_open2(codec_ctx, codec, nullptr) < 0) {

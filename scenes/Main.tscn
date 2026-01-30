@@ -3,8 +3,8 @@
 [ext_resource type="Script" uid="uid://bk6vrbk4ap3mb" path="res://scripts/main.gd" id="1"]
 [ext_resource type="Script" uid="uid://dmph6j7blyabv" path="res://scripts/desktop_stream_client.gd" id="2"]
 [ext_resource type="Script" uid="uid://bdy74luwj2cae" path="res://scripts/xr_pointer.gd" id="3"]
-[ext_resource type="Script" path="res://scripts/screen_controller.gd" id="4"]
-[ext_resource type="Script" path="res://scripts/screen_ui_panel.gd" id="5"]
+[ext_resource type="Script" uid="uid://bxubkny7n7lkt" path="res://scripts/screen_controller.gd" id="4"]
+[ext_resource type="Script" uid="uid://c1idm73rkb5dh" path="res://scripts/screen_ui_panel.gd" id="5"]
 
 [sub_resource type="StandardMaterial3D" id="1"]
 albedo_color = Color(0.18, 0.2, 0.22, 1)
@@ -27,8 +27,11 @@ size = Vector3(0.01, 0.01, 1)
 emission_enabled = true
 emission = Color(1, 1, 1, 1)
 
-[sub_resource type="SphereMesh" id="7"]
-radius = 0.012
+[sub_resource type="BoxMesh" id="BoxMesh_vcsgt"]
+size = Vector3(0.1, 0.1, 0.1)
+
+[sub_resource type="BoxMesh" id="BoxMesh_c01mt"]
+size = Vector3(0.1, 0.1, 0.1)
 
 [sub_resource type="QuadMesh" id="4"]
 size = Vector2(2.4, 1.35)
@@ -66,17 +69,17 @@ client_path = NodePath("../../DesktopClient")
 viewport_path = NodePath("../../DesktopViewport")
 screen_controller_path = NodePath("../../ScreenController")
 
-[node name="PointerRay" type="RayCast3D" parent="XROrigin3D/LeftController"]
+[node name="PointerRay" type="RayCast3D" parent="XROrigin3D/LeftController" unique_id=1753619718]
 target_position = Vector3(0, 0, -10)
 
-[node name="Laser" type="MeshInstance3D" parent="XROrigin3D/LeftController"]
+[node name="Laser" type="MeshInstance3D" parent="XROrigin3D/LeftController" unique_id=682422137]
 material_override = SubResource("8")
 mesh = SubResource("6")
 
-[node name="Reticle" type="MeshInstance3D" parent="XROrigin3D/LeftController"]
+[node name="Reticle" type="MeshInstance3D" parent="XROrigin3D/LeftController" unique_id=990782335]
 visible = false
 material_override = SubResource("9")
-mesh = SubResource("7")
+mesh = SubResource("BoxMesh_vcsgt")
 
 [node name="RightController" type="XRController3D" parent="XROrigin3D" unique_id=916853988]
 tracker = &"right_hand"
@@ -96,7 +99,7 @@ mesh = SubResource("6")
 [node name="Reticle" type="MeshInstance3D" parent="XROrigin3D/RightController" unique_id=2094890208]
 visible = false
 material_override = SubResource("9")
-mesh = SubResource("7")
+mesh = SubResource("BoxMesh_c01mt")
 
 [node name="ScreenPivot" type="Node3D" parent="." unique_id=1326322949]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.4, -2.5)
@@ -109,19 +112,19 @@ mesh = SubResource("4")
 [node name="ScreenCollision" type="CollisionShape3D" parent="ScreenPivot/ScreenBody" unique_id=608920815]
 shape = SubResource("5")
 
-[node name="ScreenUIPanel" type="Node3D" parent="ScreenPivot"]
+[node name="ScreenUIPanel" type="Node3D" parent="ScreenPivot" unique_id=1018424706]
 script = ExtResource("5")
 screen_controller_path = NodePath("../../ScreenController")
 
 [node name="DesktopClient" type="Node" parent="." unique_id=1206704689]
 script = ExtResource("2")
 
-[node name="ScreenController" type="Node3D" parent="."]
+[node name="ScreenController" type="Node3D" parent="." unique_id=244674911]
 script = ExtResource("4")
 screen_pivot_path = NodePath("../ScreenPivot")
 xr_camera_path = NodePath("../XROrigin3D/XRCamera3D")
-right_controller_path = NodePath("../XROrigin3D/RightController")
 left_controller_path = NodePath("../XROrigin3D/LeftController")
+right_controller_path = NodePath("../XROrigin3D/RightController")
 
 [node name="DesktopViewport" type="SubViewport" parent="." unique_id=1312272563]
 size = Vector2i(1280, 720)
