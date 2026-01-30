@@ -7,8 +7,8 @@ compatibility_minimum = "4.2"
 # linux.x86_64.release = "res://addons/h264_decoder/bin/linux/libh264_decoder.so"
 # windows.x86_64.debug = "res://addons/h264_decoder/bin/windows/h264_decoder.dll"
 # windows.x86_64.release = "res://addons/h264_decoder/bin/windows/h264_decoder.dll"
-android.arm64.debug = "res://addons/h264_decoder/bin/android/libh264_decoder.arm64.so"
-android.arm64.release = "res://addons/h264_decoder/bin/android/libh264_decoder.arm64.so"
+android.arm64.debug = "res://addons/h264_decoder/bin/android/libh264_decoder.so"
+android.arm64.release = "res://addons/h264_decoder/bin/android/libh264_decoder.so"
 
 [dependencies]
 android.arm64 = {

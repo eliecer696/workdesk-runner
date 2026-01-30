@@ -200,8 +200,27 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
     // Target Layout: [ U Plane (Left) | V Plane (Right) ] at bottom
     uint8_t* uv_dst_start = dst + y_size;
 
-    // SAFETY: Initialize UV to 128 (Grey). This prevents GREEN SCREEN if copy fails.
-    memset(uv_dst_start, 128, uv_size * 2);
+    // ANTI-GREEN FILTER:
+    // P-frames sometimes have Valid Y but Zero U/V (Green).
+    // We check a few pixels. If they are all 0, we FORCE Grey (128).
+    
+    bool u_invalid = false;
+    bool v_invalid = false;
+    
+    if (frame->data[1]) {
+        // Check 4 points: start, mid, 3/4, end
+        int step = frame->linesize[1] * uv_height / 4;
+        if (frame->data[1][0] == 0 && frame->data[1][step] == 0) u_invalid = true;
+    }
+    if (frame->data[2]) {
+        int step = frame->linesize[2] * uv_height / 4;
+        if (frame->data[2][0] == 0 && frame->data[2][step] == 0) v_invalid = true;
+    }
+
+    // Safety Init: Default to Grey if invalid
+    if (u_invalid || v_invalid) {
+         memset(uv_dst_start, 128, uv_size * 2);
+    }
 
     // Check for standard Planar YUV (YUV420P, YUVJ420P)
     // Format 0 = YUV420P, 12 = YUVJ420P

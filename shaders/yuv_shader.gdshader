@@ -4,11 +4,33 @@ render_mode unshaded, cull_disabled;
 // Texture containing either RGB image or Packed YUV data
 uniform sampler2D yuv_tex : filter_linear, repeat_disable;
 uniform bool is_yuv = false;
+uniform float saturation : hint_range(0.0, 2.0) = 1.2; // Default 20% boost
+
+vec3 rgb2hsv(vec3 c) {
+    vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
 
 void fragment() {
 	if (!is_yuv) {
-		// Standard RGB texture (JPEG fallback)
-		ALBEDO = texture(yuv_tex, UV).rgb;
+		// Just sample RGB texture
+		vec3 color = texture(yuv_tex, UV).rgb;
+		
+		// Apply saturation boost to RGB fallback too
+		vec3 hsv = rgb2hsv(color);
+		hsv.y *= saturation;
+		ALBEDO = hsv2rgb(hsv);
 	} else {
 		// YUV Layout in single L8 texture:
 		// Top 2/3 (0.0 to 0.666) -> Y Plane (luminance)
@@ -23,11 +45,21 @@ void fragment() {
 		// U Sample (Bottom 1/3, Left)
 		float u_uv_x = UV.x * 0.5;
 		float chrom_uv_y = 0.666666 + (UV.y * 0.333333);
-		float u = texture(yuv_tex, vec2(u_uv_x, chrom_uv_y)).r - 0.5;
+		float u_raw = texture(yuv_tex, vec2(u_uv_x, chrom_uv_y)).r;
+		float u = u_raw - 0.5;
 		
 		// V Sample (Bottom 1/3, Right)
 		float v_uv_x = 0.5 + (UV.x * 0.5);
-		float v = texture(yuv_tex, vec2(v_uv_x, chrom_uv_y)).r - 0.5;
+		float v_raw = texture(yuv_tex, vec2(v_uv_x, chrom_uv_y)).r;
+		float v = v_raw - 0.5;
+
+        // GREEN SCREEN FIX:
+        // If U and V are exactly 0.0 (from a zero-initialized texture), the result is GREEN.
+        // We detect this (raw value near 0) and force it to Grey (0.5 - 0.5 = 0.0).
+        if (u_raw < 0.01 && v_raw < 0.01) {
+            u = 0.0;
+            v = 0.0;
+        }
 		
 		// Convert from Limited Range (16-235) to Full Range (0-255)
 		// Y: (val - 16/255) / (219/255)
@@ -56,10 +88,14 @@ void fragment() {
 		u = u - 0.5;
 		v = v - 0.5;
 		
+
 		float r = y + 1.793 * v;
 		float g = y - 0.213 * u - 0.533 * v;
 		float b = y + 2.112 * u;
-		
-		ALBEDO = vec3(r, g, b);
+
+		vec3 rgb = vec3(r, g, b);
+		vec3 hsv = rgb2hsv(rgb);
+		hsv.y *= saturation; // Boost saturation
+		ALBEDO = hsv2rgb(hsv);
 	}
 }

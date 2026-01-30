@@ -39,8 +39,11 @@ internal static class Program
     private static long _encodedCount = 0;
     private static long _sentCount = 0;
     
-
-
+    // Constant Stream State
+    private static byte[]? _lastFrameBuffer = null;
+    private static int _lastWidth = 0;
+    private static int _lastHeight = 0;
+    
     // Win32 imports
     private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     private const uint MOUSEEVENTF_LEFTUP = 0x0004;
@@ -297,18 +300,57 @@ internal static class Program
                             height = _dxgiCapture.Height;
                             
                             _capturedCount++;
+                            
+                            // Cache valid frame for re-use
+                            _lastFrameBuffer = frameBuffer;
+                            _lastWidth = width;
+                            _lastHeight = height;
                         }
                         else
                         {
-                            // No new frame or timeout - skip this loop iteration
-                            // Do NOT fall back to GDI+ as it kills performance
-                            capturedData = null;
+                            // DXGI Timeout (No screen change)
+                            
+                            // FORCE CONSTANT STREAM: Re-send last frame
+                            if (_lastFrameBuffer != null)
+                            {
+                                capturedData = _lastFrameBuffer;
+                                width = _lastWidth;
+                                height = _lastHeight;
+                                // Don't increment captured count for duplicates? Or do? 
+                                // Let's do it to show pipeline is alive.
+                                _capturedCount++;
+                            }
+                            // UNLESS a client needs a keyframe (e.g. just connected) and we have no data
+                            // In that case, force a GDI+ capture to unblock the stream
+                            else if (Clients.Values.Any(c => c.NeedsKeyframe) || _capturedCount == 0)
+                            {
+                                // Console.WriteLine("[Capture] Force GDI+ fallback for static screen keyframe");
+                                try
+                                {
+                                    (capturedData, width, height) = CaptureGdiPlus(screenBounds);
+                                    _capturedCount++;
+                                    
+                                    // Cache GDI frame too
+                                    _lastFrameBuffer = capturedData;
+                                    _lastWidth = width;
+                                    _lastHeight = height;
+                                } 
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"[Capture] Fallback failed: {ex.Message}");
+                                }
+                            }
+                            else
+                            {
+                                capturedData = null;
+                            }
                         }
                     }
                     else
                     {
                         // GDI+ Fallback (only if DXGI failed to initialize)
                         (capturedData, width, height) = CaptureGdiPlus(screenBounds);
+                         _capturedCount++;
                     }
 
                     if (capturedData != null)
@@ -319,7 +361,8 @@ internal static class Program
                 }
                 catch (Exception ex)
                 {
-                    if (frameNumber < 5) Console.WriteLine($"[Capture] Error: {ex.Message}");
+                    // Throttle error logs
+                    if (frameNumber % 60 == 0) Console.WriteLine($"[Capture] Error: {ex.Message}");
                 }
             }
 
@@ -462,8 +505,11 @@ internal static class Program
             if (Clients.IsEmpty) continue;
 
             // Build frame packet: [FrameType:1][CursorU:4][CursorV:4][Data:N]
+            // FrameType: 0=P-Frame, 1=I-Frame
+            byte frameType = (byte)(frame.IsKeyFrame ? 1 : 0);
+            
             var payload = new byte[9 + frame.Data.Length];
-            payload[0] = (byte)(frame.IsKeyFrame ? 1 : 0);
+            payload[0] = frameType;
             BitConverter.GetBytes(frame.CursorU).CopyTo(payload, 1);
             BitConverter.GetBytes(frame.CursorV).CopyTo(payload, 5);
             frame.Data.CopyTo(payload, 9);
@@ -497,7 +543,7 @@ internal static class Program
         try
         {
             // Use a cancellation token with a timeout to prevent hanging on a dead socket
-            using var cts = new CancellationTokenSource(100); // 100ms timeout
+            using var cts = new CancellationTokenSource(5000); // 5000ms timeout to allow large I-frames on slow networks
             await client.Socket.SendAsync(payload, WebSocketMessageType.Binary, true, cts.Token);
             client.LastFrameSent = frameNumber;
         }

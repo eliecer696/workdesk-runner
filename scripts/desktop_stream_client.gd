@@ -47,6 +47,11 @@ var _h264_decoder = null # H264Decoder GDExtension instance
 var _use_h264 := true # Try H.264 first, fall back to JPEG if extension not available
 
 func _ready() -> void:
+	print("[DesktopClient] CLIENT v2.1 (Mouse Fix + Green Mask)")
+	emit_signal("status_changed", "Client v2.1 Loaded")
+	
+	# Create shared resources
+	_frame_queue = []
 	_current_delay = reconnect_delay_sec
 	_next_reconnect_time = reconnect_delay_sec
 	
@@ -211,10 +216,15 @@ func _handle_frame_packet(bytes: PackedByteArray) -> void:
 	# Extract cursor data IMMEDIATELY on main thread for minimum latency
 	if bytes.size() >= 9:
 		# New format: [FrameType:1][CursorU:4][CursorV:4][Data:N]
-		if bytes[0] <= 1: # Basic validation
+		# 0=P-Frame, 1=I-Frame, 2=MouseOnly
+		if bytes[0] <= 2:
 			var cursor_u := bytes.decode_float(1)
 			var cursor_v := bytes.decode_float(5)
 			emit_signal("cursor_received", Vector2(cursor_u, cursor_v))
+			
+			# If MouseOnly, stop here (no video data to decode)
+			if bytes[0] == 2:
+				return
 	elif bytes.size() >= 8:
 		# Old format
 		var cursor_u := bytes.decode_float(0)
@@ -345,8 +355,9 @@ func _on_frame_decoded(image: Image, decode_time: float, is_keyframe: bool) -> v
 		_reusable_texture = ImageTexture.create_from_image(image)
 		_last_frame_size = frame_size
 		print("[DesktopClient] Created texture: %dx%d fmt=%d" % [frame_size.x, frame_size.y, image.get_format()])
+		print("[DesktopClient] Created texture: %dx%d fmt=%d" % [frame_size.x, frame_size.y, image.get_format()])
 	else:
-		_reusable_texture.update(image)
+		_reusable_texture.set_image(image)
 	
 	var is_yuv = (image.get_format() == Image.FORMAT_L8)
 	emit_signal("frame_received", _reusable_texture, is_yuv)
