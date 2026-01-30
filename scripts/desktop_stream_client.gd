@@ -41,6 +41,9 @@ var _decode_time_ms := 0.0
 var _keyframes_received := 0
 var _pframes_received := 0
 
+# H.264 decode state
+var _waiting_for_keyframe := true
+var _h264_decoder = null # H264Decoder GDExtension instance
 var _use_h264 := true # Try H.264 first, fall back to JPEG if extension not available
 
 # Audio State
@@ -50,8 +53,8 @@ var _audio_generator: AudioStreamGenerator
 var _audio_started := false
 
 func _ready() -> void:
-	print("[DesktopClient] CLIENT v2.8 (IMA ADPCM Audio)")
-	emit_signal("status_changed", "Client v2.8 Loaded")
+	print("[DesktopClient] CLIENT v2.9 (Bugfix + Audio)")
+	emit_signal("status_changed", "Client v2.9 Loaded")
 	
 	# Create shared resources
 	_frame_queue = []
