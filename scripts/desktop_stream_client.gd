@@ -23,11 +23,12 @@ var _connecting := false
 # ═══════════════════════════════════════════════════════════════════════════
 # THREADING & OPTIMIZATION
 # ═══════════════════════════════════════════════════════════════════════════
+var _running := false
+var _network_thread: Thread
 var _decode_thread: Thread
 var _decode_semaphore: Semaphore
 var _decode_mutex: Mutex
 var _frame_queue: Array[Dictionary] = [] # Stores {bytes: PackedByteArray, start_time: int}
-var _running := false
 
 var _reusable_texture: ImageTexture = null
 var _last_frame_size: Vector2i = Vector2i.ZERO
@@ -53,12 +54,12 @@ var _audio_generator: AudioStreamGenerator
 var _audio_started := false
 var _audio_buffer: PackedVector2Array = PackedVector2Array() # Jitter buffer
 var _prebuffering := true
-var _prebuffer_size := 24000 # ~500ms at 48kHz (v3.6 Optimization)
+var _prebuffer_size := 28800 # ~600ms at 48kHz (v3.7 Overhaul)
 var _target_playback_fill := 4800 # Keep 100ms in Godot's buffer
 
 func _ready() -> void:
-	print("[DesktopClient] CLIENT v3.6 (Maximum Stability)")
-	emit_signal("status_changed", "Client v3.6 Loaded")
+	print("[DesktopClient] CLIENT v3.7 (Stateless Audio & Network Threading)")
+	emit_signal("status_changed", "Client v3.7 Loaded")
 	
 	# Create shared resources
 	_frame_queue = []
@@ -76,11 +77,14 @@ func _ready() -> void:
 	_audio_playback = _audio_player.get_stream_playback()
 	
 	# Initialize Threading
+	_running = true
 	_decode_thread = Thread.new()
 	_decode_semaphore = Semaphore.new()
 	_decode_mutex = Mutex.new()
-	_running = true
 	_decode_thread.start(_decode_loop)
+	
+	_network_thread = Thread.new()
+	_network_thread.start(_network_loop)
 	
 	# Try to initialize H.264 decoder GDExtension
 	if ClassDB.class_exists("H264Decoder"):
@@ -106,6 +110,8 @@ func _exit_tree() -> void:
 	_decode_semaphore.post()
 	if _decode_thread.is_started():
 		_decode_thread.wait_to_finish()
+	if _network_thread.is_started():
+		_network_thread.wait_to_finish()
 
 func connect_to_server() -> void:
 	if _ws != null and _ws.get_ready_state() == WebSocketPeer.STATE_OPEN:
@@ -148,136 +154,132 @@ func disconnect_from_server() -> void:
 		_ws.close()
 
 func _process(delta: float) -> void:
-	# FPS counter
+	# FPS counter (updated by decode thread, displayed by main)
 	_last_fps_time += delta
 	if _last_fps_time >= 1.0:
 		_current_fps = _frames_this_second
 		_frames_this_second = 0
 		_last_fps_time = 0.0
 	
-	# Reconnection logic
-	if auto_reconnect and (_ws == null or _ws.get_ready_state() == WebSocketPeer.STATE_CLOSED):
-		if not _connecting:
-			_next_reconnect_time = max(_next_reconnect_time - delta, 0.0)
-			if _next_reconnect_time <= 0.0:
-				connect_to_server()
-				_current_delay = min(_current_delay * 1.5, reconnect_max_delay_sec)
-				_next_reconnect_time = _current_delay
-	
 	_update_audio_buffer()
-	
-	if _ws == null:
-		return
-	
-	_ws.poll()
-	var state := _ws.get_ready_state()
-	
-	if state != _last_state:
-		_last_state = state
-		_connecting = false
-		match state:
-			WebSocketPeer.STATE_OPEN:
-				print("[DesktopClient] Connected!")
-				emit_signal("status_changed", "Desktop stream: connected")
-				emit_signal("connection_changed", true)
-				_current_delay = reconnect_delay_sec
-				_next_reconnect_time = reconnect_delay_sec
-				_send_hello()
-				_request_keyframe()
-			WebSocketPeer.STATE_CONNECTING:
-				emit_signal("status_changed", "Desktop stream: connecting")
-			WebSocketPeer.STATE_CLOSING:
-				emit_signal("status_changed", "Desktop stream: closing")
-			WebSocketPeer.STATE_CLOSED:
-				var code := _ws.get_close_code()
-				print("[DesktopClient] Disconnected, code: ", code)
-				emit_signal("status_changed", "Disconnected (code: %d)" % code)
-				emit_signal("connection_changed", false)
-	
-	# Process all available packets
-	while _ws.get_available_packet_count() > 0:
-		var packet := _ws.get_packet()
-		if _ws.was_string_packet():
-			_handle_text(packet.get_string_from_utf8())
-		else:
-			_handle_frame_packet(packet)
 
-func _get_error_name(err: int) -> String:
-	match err:
-		OK: return "OK"
-		ERR_CANT_CONNECT: return "ERR_CANT_CONNECT"
-		ERR_CANT_RESOLVE: return "ERR_CANT_RESOLVE"
-		ERR_CONNECTION_ERROR: return "ERR_CONNECTION_ERROR"
-		ERR_TIMEOUT: return "ERR_TIMEOUT"
-		_: return "ERROR_%d" % err
-
-func _send_hello() -> void:
-	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
-		return
-	var msg := {"type": "hello", "client": "godot", "version": 2}
-	_ws.send_text(JSON.stringify(msg))
-
-func _request_keyframe() -> void:
-	if _ws == null or _ws.get_ready_state() != WebSocketPeer.STATE_OPEN:
-		return
-	var msg := {"type": "request_keyframe"}
-	_ws.send_text(JSON.stringify(msg))
-	print("[DesktopClient] Requested keyframe")
-
-func _handle_text(text: String) -> void:
-	var data = JSON.parse_string(text)
-	if typeof(data) == TYPE_DICTIONARY:
-		if data.has("type") and data.type == "status" and data.has("text"):
-			emit_signal("status_changed", String(data.text))
-
-# ═══════════════════════════════════════════════════════════════════════════
-# THREADED DECODING LOGIC
-# ═══════════════════════════════════════════════════════════════════════════
-
-func _handle_frame_packet(bytes: PackedByteArray) -> void:
-	# Extract cursor data IMMEDIATELY on main thread for minimum latency
-	if bytes.size() >= 9:
-		# New format: [FrameType:1][CursorU:4][CursorV:4][Data:N]
-		# 0=P-Frame, 1=I-Frame, 2=MouseOnly, 3=Audio
-		var type := bytes[0]
-		
-		if type <= 2:
-			var cursor_u := bytes.decode_float(1)
-			var cursor_v := bytes.decode_float(5)
-			emit_signal("cursor_received", Vector2(cursor_u, cursor_v))
+func _network_loop() -> void:
+	print("[Network] Background thread started")
+	# Reconnection and polling happen purely in this thread
+	while _running:
+		if _ws == null or _ws.get_ready_state() == WebSocketPeer.STATE_CLOSED:
+			if auto_reconnect and not _connecting:
+				OS.delay_msec(1000)
+				call_deferred("connect_to_server")
+			else:
+				OS.delay_msec(100)
+			continue
 			
-			# If MouseOnly, stop here (no video data to decode)
-			if type == 2:
-				return
-		elif type == 3:
-			_handle_audio_packet(bytes.slice(1))
-			return
-	elif bytes.size() >= 8:
-		# Old format
-		var cursor_u := bytes.decode_float(0)
-		var cursor_v := bytes.decode_float(4)
-		emit_signal("cursor_received", Vector2(cursor_u, cursor_v))
-	
-	# Offload decoding to thread
-	_decode_mutex.lock()
-	_frame_queue.push_back({
-		"bytes": bytes,
-		"time": Time.get_ticks_usec()
-	})
-	_decode_mutex.unlock()
-	_decode_semaphore.post()
+		_ws.poll()
+		var state = _ws.get_ready_state()
+		
+		# Handle Connection State Changes
+		if state != _last_state:
+			_last_state = state
+			if state == WebSocketPeer.STATE_OPEN:
+				print("[Network] Connected to server!")
+				_audio_buffer.clear()
+				_prebuffering = true
+				_waiting_for_keyframe = true
+				call_deferred("emit_signal", "status_changed", "Connected")
+				call_deferred("emit_signal", "connection_changed", true)
+				_connecting = false
+			elif state == WebSocketPeer.STATE_CLOSED:
+				print("[Network] Disconnected")
+				call_deferred("emit_signal", "status_changed", "Disconnected")
+				call_deferred("emit_signal", "connection_changed", false)
+				_connecting = false
+				
+		# Process All Available Packets
+		while _ws.get_available_packet_count() > 0:
+			var packet = _ws.get_packet()
+			if packet.size() < 1: continue
+			
+			var type = packet[0]
+			if type == 0 or type == 1:
+				# Video Frame Packet [Type:1][U:4][V:4][Data:N]
+				var video_data = packet.slice(9)
+				var cursor_u = packet.decode_float(1)
+				var cursor_v = packet.decode_float(5)
+				call_deferred("emit_signal", "cursor_received", Vector2(cursor_u, cursor_v))
+				
+				_decode_mutex.lock()
+				_frame_queue.append({
+					"bytes": video_data,
+					"is_key": (type == 1),
+					"time": Time.get_ticks_msec()
+				})
+				_decode_mutex.unlock()
+				_decode_semaphore.post()
+				
+			elif type == 3:
+				# Audio Packet (Stateless ADPCM)
+				var adpcm_data = packet.slice(1)
+				_handle_audio_packet(adpcm_data)
+				
+		OS.delay_msec(1) # Keep CPU usage sane (1000Hz poll rate)
 
 func _handle_audio_packet(adpcm_data: PackedByteArray) -> void:
-	# Decoding IMA ADPCM in C++ GDExtension (returns PackedVector2Array)
+	if not _h264_decoder or adpcm_data.size() < 6:
+		return
+		
+	# Decode IMA ADPCM in C++ extension
 	var samples: PackedVector2Array = _h264_decoder.decode_audio(adpcm_data)
 	
 	if samples.size() > 0:
 		_audio_buffer.append_array(samples)
 		
-	# Auto-catchup: If buffer is huge (>800ms), drop older samples to reduce latency
-		if _audio_buffer.size() > 38400:
-			_audio_buffer = _audio_buffer.slice(_audio_buffer.size() - 19200)
-			print("[Audio] Jitter buffer overflow - skipping ahead to reduce latency")
+		# Latency management (drop if >1 second backlog)
+		if _audio_buffer.size() > 48000:
+			_audio_buffer = _audio_buffer.slice(_audio_buffer.size() - 24000)
+			print("[Audio] Buffer overflow, catchup triggered")
+
+func _update_audio_buffer() -> void:
+	if not _audio_playback:
+		return
+		
+	if _prebuffering:
+		if _audio_buffer.size() >= _prebuffer_size:
+			_prebuffering = false
+			print("[Audio] Prebuffering complete.")
+		else:
+			return
+			
+func _update_audio_buffer() -> void:
+	if not _audio_playback:
+		return
+		
+	if _prebuffering:
+		if _audio_buffer.size() >= _prebuffer_size:
+			_prebuffering = false
+			print("[Audio] Prebuffering complete, starting playback.")
+			emit_signal("status_changed", "Audio Stream: Playing")
+		else:
+			return # Keep buffering
+			
+	# Push samples to fill the Godot buffer
+	var frames_needed = _audio_playback.get_frames_available()
+	if frames_needed > 0 and _audio_buffer.size() > 0:
+		var to_push = min(_audio_buffer.size(), frames_needed)
+		var push_data = _audio_buffer.slice(0, to_push)
+		_audio_playback.push_buffer(push_data)
+		_audio_buffer = _audio_buffer.slice(to_push)
+
+func _handle_audio_packet(adpcm_data: PackedByteArray) -> void:
+	# Decoding IMA ADPCM in C++ GDExtension (returns PackedVector2Array)
+	var samples: PackedVector2Array = _h264_decoder.decode_audio(adpcm_data)
+	
+	_audio_buffer.append_array(samples)
+	
+	# Auto-catchup: If buffer is huge (>1200ms), drop older samples to reduce latency
+	if _audio_buffer.size() > 57600:
+		_audio_buffer = _audio_buffer.slice(_audio_buffer.size() - 28800)
+		print("[Audio] Jitter buffer overflow - skipping ahead to reduce latency")
 
 func _update_audio_buffer() -> void:
 	if not _audio_playback:
@@ -298,6 +300,65 @@ func _update_audio_buffer() -> void:
 		var push_data = _audio_buffer.slice(0, to_push)
 		_audio_playback.push_buffer(push_data)
 		_audio_buffer = _audio_buffer.slice(to_push)
+
+func _network_loop() -> void:
+	print("[Network] Background thread started")
+	while _running:
+		if _ws == null or _ws.get_ready_state() == WebSocketPeer.STATE_CLOSED:
+			if auto_reconnect and not _connecting:
+				OS.delay_msec(1000)
+				# No await in threads, use OS.delay
+				call_deferred("connect_to_server")
+			else:
+				OS.delay_msec(100)
+			continue
+			
+		_ws.poll()
+		var state = _ws.get_ready_state()
+		
+		if state != _last_state:
+			_last_state = state
+			if state == WebSocketPeer.STATE_OPEN:
+				print("[Network] Connected to server!")
+				# Reset audio buffer on new connection
+				_audio_buffer.clear()
+				_prebuffering = true
+				call_deferred("emit_signal", "status_changed", "Desktop stream: connected")
+				call_deferred("emit_signal", "connection_changed", true)
+				_connecting = false
+			elif state == WebSocketPeer.STATE_CLOSED:
+				print("[Network] Disconnected from server")
+				call_deferred("emit_signal", "status_changed", "Desktop stream: disconnected")
+				call_deferred("emit_signal", "connection_changed", false)
+				_connecting = false
+				
+		while _ws.get_available_packet_count() > 0:
+			var packet = _ws.get_packet()
+			if packet.size() < 1: continue
+			
+			var type = packet[0]
+			if type == 0 or type == 1:
+				# Video packet
+				var video_data = packet.slice(9)
+				var cursor_u = packet.decode_float(1)
+				var cursor_v = packet.decode_float(5)
+				call_deferred("emit_signal", "cursor_received", Vector2(cursor_u, cursor_v))
+				
+				_decode_mutex.lock()
+				_frame_queue.append({
+					"bytes": video_data,
+					"is_key": (type == 1),
+					"time": Time.get_ticks_msec()
+				})
+				_decode_mutex.unlock()
+				_decode_semaphore.post()
+				
+			elif type == 3:
+				# Audio packet (stateless IMA ADPCM)
+				var adpcm_data = packet.slice(1)
+				_handle_audio_packet(adpcm_data)
+				
+		OS.delay_msec(1) # Keep CPU usage sane but latency low
 
 func _decode_loop() -> void:
 	while _running:

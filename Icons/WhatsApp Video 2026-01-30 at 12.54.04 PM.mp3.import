@@ -1,0 +1,19 @@
+[remap]
+
+importer="mp3"
+type="AudioStreamMP3"
+uid="uid://bey6xfj8kvyvm"
+path="res://.godot/imported/WhatsApp Video 2026-01-30 at 12.54.04 PM.mp3-19006a6475be7a177fd21d2d2d2e1e9f.mp3str"
+
+[deps]
+
+source_file="res://Icons/WhatsApp Video 2026-01-30 at 12.54.04 PM.mp3"
+dest_files=["res://.godot/imported/WhatsApp Video 2026-01-30 at 12.54.04 PM.mp3-19006a6475be7a177fd21d2d2d2e1e9f.mp3str"]
+
+[params]
+
+loop=false
+loop_offset=0
+bpm=0
+beat_count=0
+bar_beats=4
