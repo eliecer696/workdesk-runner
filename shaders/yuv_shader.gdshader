@@ -53,14 +53,12 @@ void fragment() {
 		float v_raw = texture(yuv_tex, vec2(v_uv_x, chrom_uv_y)).r;
 		float v = v_raw - 0.5;
 
-        // NUCLEAR GREEN MASK:
-        // If EITHER U or V is low (< 0.45), we assume color data is garbage (Green Screen).
-        // By using || (OR), we catch cases where only one plane is zeroed.
-        bool masked = false;
-        if (u_raw < 0.45 || v_raw < 0.45) {
-            u_raw = 0.5; // Force Neutral grey
-            v_raw = 0.5; // Force Neutral grey
-            masked = true;
+        // SURGICAL GREEN MASK:
+        // Only mask if BOTH U and V are nearly zero (uninitialized).
+        // This prevents the "washed out" look while still killing the Green Screen.
+        if (u_raw < 0.05 && v_raw < 0.05) {
+            u_raw = 0.5; 
+            v_raw = 0.5; 
         }
 		
 		// 1. Shift to center zero

@@ -47,8 +47,8 @@ var _h264_decoder = null # H264Decoder GDExtension instance
 var _use_h264 := true # Try H.264 first, fall back to JPEG if extension not available
 
 func _ready() -> void:
-	print("[DesktopClient] CLIENT v2.1 (Mouse Fix + Green Mask)")
-	emit_signal("status_changed", "Client v2.1 Loaded")
+	print("[DesktopClient] CLIENT v2.6 (Fidelity & Speed Fix)")
+	emit_signal("status_changed", "Client v2.6 Loaded")
 	
 	# Create shared resources
 	_frame_queue = []

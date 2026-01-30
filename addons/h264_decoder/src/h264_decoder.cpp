@@ -104,7 +104,8 @@ bool H264Decoder::initialize(int expected_width, int expected_height) {
     // Configure for low latency
     codec_ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
     codec_ctx->flags2 |= AV_CODEC_FLAG2_FAST;
-    codec_ctx->thread_count = 0; // Auto
+    codec_ctx->thread_count = 1; // 1 thread for lowest latency (no inter-thread buffer delay)
+    codec_ctx->thread_type = FF_THREAD_SLICE;
 
     if (avcodec_open2(codec_ctx, codec, nullptr) < 0) {
         UtilityFunctions::printerr("[H264Decoder] Failed to open codec");
@@ -206,12 +207,22 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
     bool v_invalid = false;
     
     if (!u_missing) {
-        int step = frame->linesize[1] * uv_height / 4;
-        if (frame->data[1][0] == 0 && frame->data[1][step] == 0) u_invalid = true;
+        // Validation: Check multiple points. Only if ALL are 0 do we assume it's uninitialized.
+        // This prevents false positives on dark pixels.
+        u_invalid = (frame->data[1][0] == 0 && 
+                     frame->data[1][uv_width/2] == 0 && 
+                     frame->data[1][uv_width-1] == 0 &&
+                     frame->data[1][uv_size/4] == 0 &&
+                     frame->data[1][uv_size/2] == 0 &&
+                     frame->data[1][uv_size-1] == 0);
     }
     if (!v_missing && frame->data[2]) {
-        int step = frame->linesize[2] * uv_height / 4;
-        if (frame->data[2][0] == 0 && frame->data[2][step] == 0) v_invalid = true;
+        v_invalid = (frame->data[2][0] == 0 && 
+                     frame->data[2][uv_width/2] == 0 && 
+                     frame->data[2][uv_width-1] == 0 &&
+                     frame->data[2][uv_size/4] == 0 &&
+                     frame->data[2][uv_size/2] == 0 &&
+                     frame->data[2][uv_size-1] == 0);
     }
 
     // 3. NUCLEAR ACTION: Pre-fill UV with Grey if anything is fishy
