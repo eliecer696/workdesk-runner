@@ -200,10 +200,16 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
     // Target Layout: [ U Plane (Left) | V Plane (Right) ] at bottom
     uint8_t* uv_dst_start = dst + y_size;
 
+    // SAFETY: Initialize UV to 128 (Grey). This prevents GREEN SCREEN if copy fails.
+    memset(uv_dst_start, 128, uv_size * 2);
+
     // Check for standard Planar YUV (YUV420P, YUVJ420P)
     // Format 0 = YUV420P, 12 = YUVJ420P
     if (frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUVJ420P) {
         if (frame->data[1] && frame->data[2]) {
+            // DEBUG: print plane pointers
+            // UtilityFunctions::print("[H264Decoder] Copying Planes U:", (int64_t)frame->data[1], " V:", (int64_t)frame->data[2]);
+            
             for (int i = 0; i < uv_height; i++) {
                 uint8_t* row_dst = uv_dst_start + (i * width);
                 uint8_t* u_src = frame->data[1] + (i * frame->linesize[1]);
@@ -212,6 +218,8 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
                 memcpy(row_dst, u_src, uv_width);
                 memcpy(row_dst + uv_width, v_src, uv_width);
             }
+        } else {
+             UtilityFunctions::print("[H264Decoder] YUV420P but MISSING chrominance planes! (Green prevented by grey fill)");
         }
     } 
     // Check for Semi-Planar NV12 (Y, then UVUVUV) or NV21 (Y, then VUVUVU)
@@ -241,9 +249,7 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
         }
     }
     else {
-        // Unknown format - Fill UV with 128 (Grey) to avoid Green screen
-        // This is a safety fallback
-        memset(uv_dst_start, 128, uv_size * 2);
+        // Unknown format - UV already filled with 128 (Grey) above.
         static bool warned = false;
         if (!warned) {
              UtilityFunctions::printerr("[H264Decoder] Unsupported format: ", (int)frame->format, " Filling UV with grey.");

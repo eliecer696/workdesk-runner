@@ -18,7 +18,7 @@ internal static class Program
     // ═══════════════════════════════════════════════════════════════════════════
     private const int Port = 9000;
     private const int TargetFps = 60;           // Match monitor refresh rate as requested
-    private const int BitrateMbps = 50;         // H.264 bitrate (adjustable 20-150)
+    private const int BitrateMbps = 15;         // H.264 bitrate (adjustable 20-150)
     private const int MaxClients = 4;
     private const bool UseHardwareCapture = true;   // DXGI vs GDI+
     private const bool UseH264Encoding = true;      // H.264 vs JPEG fallback
@@ -32,7 +32,14 @@ internal static class Program
     private static DxgiCapture? _dxgiCapture;
     private static H264Encoder? _h264Encoder;
     private static bool _requestKeyframe = false;
-    private static int _frameCount = 0;
+    private static long _frameCount = 0;
+    
+    // Pipeline Debugging Counters
+    private static long _capturedCount = 0;
+    private static long _encodedCount = 0;
+    private static long _sentCount = 0;
+    
+
 
     // Win32 imports
     private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
@@ -116,7 +123,16 @@ internal static class Program
         Console.WriteLine($"[Server] Target: {TargetFps} FPS, {BitrateMbps} Mbps");
         Console.WriteLine($"[Server] Capture: {(UseHardwareCapture ? "DXGI (GPU)" : "GDI+ (CPU)")}");
         Console.WriteLine($"[Server] Encoding: {(UseH264Encoding ? "H.264 Hardware" : "JPEG Fallback")}");
+        Console.WriteLine($"[Server] Encoding: {(UseH264Encoding ? "H.264 Hardware" : "JPEG Fallback")}");
         Console.WriteLine("[Server] Listening on ports 80, 9000");
+
+        // Helper loop to print occasional stats
+        _ = Task.Run(async () => {
+             while (!cts.IsCancellationRequested) {
+                 await Task.Delay(5000);
+                 Console.WriteLine($"[Stats] Capture Mode: {(_dxgiCapture != null ? "DXGI" : "GDI+")} | Cap: {_capturedCount} Enc: {_encodedCount} Sent: {_sentCount}");
+             }
+        });
 
         await app.RunAsync();
         
@@ -242,11 +258,11 @@ internal static class Program
             }
         }
 
-        // Allocate reusable buffer
+        // Allocate reusable buffer size tracker
+        // FIX: Don't use a single array, alloc new one per frame to avoid race condition
         var bufferSize = (_dxgiCapture?.Width ?? screenBounds.Width) * 
                         (_dxgiCapture?.Height ?? screenBounds.Height) * 4;
-        var frameBuffer = new byte[bufferSize];
-
+        
         Console.WriteLine("[Capture] Loop started");
 
         while (!ct.IsCancellationRequested)
@@ -263,20 +279,35 @@ internal static class Program
                     float cursorV = (float)cursor.Y / screenBounds.Height;
 
                     byte[]? capturedData = null;
-                    int width, height;
+                    int width = 0, height = 0;
 
-                    // Capture frame
-                    if (_dxgiCapture != null && _dxgiCapture.TryAcquireFrame(1))
+                    if (_dxgiCapture != null)
                     {
-                        _dxgiCapture.GetFrameDataInto(frameBuffer);
-                        _dxgiCapture.ReleaseFrame();
-                        capturedData = frameBuffer;
-                        width = _dxgiCapture.Width;
-                        height = _dxgiCapture.Height;
+                        // DXGI Path
+                        if (_dxgiCapture.TryAcquireFrame(10)) // 10ms timeout to wait for VBlank
+                        {
+                            // FIX: Allocate NEW buffer to prevent overwriting data still being encoded
+                            // In a production app, use a BufferPool. For now, GC handles it fine.
+                            var frameBuffer = new byte[bufferSize];
+                            
+                            _dxgiCapture.GetFrameDataInto(frameBuffer);
+                            _dxgiCapture.ReleaseFrame();
+                            capturedData = frameBuffer;
+                            width = _dxgiCapture.Width;
+                            height = _dxgiCapture.Height;
+                            
+                            _capturedCount++;
+                        }
+                        else
+                        {
+                            // No new frame or timeout - skip this loop iteration
+                            // Do NOT fall back to GDI+ as it kills performance
+                            capturedData = null;
+                        }
                     }
                     else
                     {
-                        // Fallback to GDI+
+                        // GDI+ Fallback (only if DXGI failed to initialize)
                         (capturedData, width, height) = CaptureGdiPlus(screenBounds);
                     }
 
@@ -377,6 +408,8 @@ internal static class Program
                 {
                     var encoded = new EncodedFrame(encodedData, frame.CursorU, frame.CursorV, isKeyFrame, frame.FrameNumber);
                     await _encodeChannel!.Writer.WriteAsync(encoded, ct);
+                    
+                    _encodedCount++;
 
                     _frameCount++;
                     if (_frameCount % 300 == 1)
@@ -449,6 +482,8 @@ internal static class Program
 
                 sendTasks.Add(SendToClientAsync(client, payload, frame.FrameNumber));
             }
+            
+            _sentCount++;
 
             if (sendTasks.Count > 0)
             {
@@ -461,12 +496,16 @@ internal static class Program
     {
         try
         {
-            await client.Socket.SendAsync(payload, WebSocketMessageType.Binary, true, CancellationToken.None);
+            // Use a cancellation token with a timeout to prevent hanging on a dead socket
+            using var cts = new CancellationTokenSource(100); // 100ms timeout
+            await client.Socket.SendAsync(payload, WebSocketMessageType.Binary, true, cts.Token);
             client.LastFrameSent = frameNumber;
         }
-        catch
+        catch (Exception ex)
         {
-            // Client will be removed when receive loop detects disconnect
+            // Client will be removed when receive loop detects disconnect, or we can flag it here
+            // For now, just logging on debug if needed, but keeping it silent to avoid spam
+            // Console.WriteLine($"[Send] Error sending to client: {ex.Message}");
         }
     }
 }
