@@ -53,8 +53,8 @@ var _audio_generator: AudioStreamGenerator
 var _audio_started := false
 
 func _ready() -> void:
-	print("[DesktopClient] CLIENT v3.3 (Pointer & Visual Cleanup)")
-	emit_signal("status_changed", "Client v3.3 Loaded")
+	print("[DesktopClient] CLIENT v3.4 (Audio Debug)")
+	emit_signal("status_changed", "Client v3.4 Loaded")
 	
 	# Create shared resources
 	_frame_queue = []
@@ -265,8 +265,13 @@ func _handle_audio_packet(adpcm_data: PackedByteArray) -> void:
 	if not _h264_decoder or not _audio_playback:
 		return
 		
-	# Decode IMA ADPCM in C++ GDExtension (returns PackedVector2Array)
+	# Decoding IMA ADPCM in C++ GDExtension (returns PackedVector2Array)
 	var samples: PackedVector2Array = _h264_decoder.decode_audio(adpcm_data)
+	
+	if not _audio_started:
+		_audio_started = true
+		print("[Audio] First packet received! Playback started.")
+		emit_signal("status_changed", "Audio Stream: Receiving")
 	
 	# Push to Godot AudioStreamGenerator
 	if samples.size() > 0:

@@ -583,11 +583,11 @@ internal static class Program
 
     private static async Task AudioLoopAsync(CancellationToken ct)
     {
-        Console.WriteLine("[Audio] Loop started (WASAPI Loopback)");
-
         try
         {
             using var capture = new WasapiLoopbackCapture();
+            Console.WriteLine($"[Audio] Capturing from: {capture.ShareMode} device");
+            
             var encoder = new ImaAdpcmEncoder();
             
             capture.DataAvailable += async (s, e) =>
@@ -645,7 +645,16 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Audio] Error: {ex.Message}");
+            Console.WriteLine("[Audio] FATAL ERROR: Audio capture could not start.");
+            Console.WriteLine($"[Audio] Error Details: {ex.Message}");
+            if (ex.Message.Contains("0x88890004")) // AUDCLNT_E_DEVICE_INVALIDATED
+            {
+                Console.WriteLine("[Audio] ADVICE: No active playback device found. Please plug in a speaker/headphone or enable a Virtual Audio Cable.");
+            }
+            else
+            {
+                Console.WriteLine("[Audio] ADVICE: Ensure a default playback device is active in Windows Sound Settings.");
+            }
         }
     }
 
