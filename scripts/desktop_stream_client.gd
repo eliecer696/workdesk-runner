@@ -58,8 +58,8 @@ var _prebuffer_size := 28800 # ~600ms at 48kHz (v3.7 Overhaul)
 var _target_playback_fill := 4800 # Keep 100ms in Godot's buffer
 
 func _ready() -> void:
-	print("[DesktopClient] CLIENT v3.7.1 (Stateless Audio & Network Threading - FIXED)")
-	emit_signal("status_changed", "Client v3.7.1 Loaded")
+	print("[DesktopClient] CLIENT v3.7.2 (Final Stable Architecture)")
+	emit_signal("status_changed", "Client v3.7.2 Loaded")
 	
 	# Create shared resources
 	_frame_queue = []
@@ -260,64 +260,6 @@ func _update_audio_buffer() -> void:
 		_audio_playback.push_buffer(push_data)
 		_audio_buffer = _audio_buffer.slice(to_push)
 
-func _network_loop() -> void:
-	print("[Network] Background thread started")
-	while _running:
-		if _ws == null or _ws.get_ready_state() == WebSocketPeer.STATE_CLOSED:
-			if auto_reconnect and not _connecting:
-				OS.delay_msec(1000)
-				# No await in threads, use OS.delay
-				call_deferred("connect_to_server")
-			else:
-				OS.delay_msec(100)
-			continue
-			
-		_ws.poll()
-		var state = _ws.get_ready_state()
-		
-		if state != _last_state:
-			_last_state = state
-			if state == WebSocketPeer.STATE_OPEN:
-				print("[Network] Connected to server!")
-				# Reset audio buffer on new connection
-				_audio_buffer.clear()
-				_prebuffering = true
-				call_deferred("emit_signal", "status_changed", "Desktop stream: connected")
-				call_deferred("emit_signal", "connection_changed", true)
-				_connecting = false
-			elif state == WebSocketPeer.STATE_CLOSED:
-				print("[Network] Disconnected from server")
-				call_deferred("emit_signal", "status_changed", "Desktop stream: disconnected")
-				call_deferred("emit_signal", "connection_changed", false)
-				_connecting = false
-				
-		while _ws.get_available_packet_count() > 0:
-			var packet = _ws.get_packet()
-			if packet.size() < 1: continue
-			
-			var type = packet[0]
-			if type == 0 or type == 1:
-				# Video packet
-				var video_data = packet.slice(9)
-				var cursor_u = packet.decode_float(1)
-				var cursor_v = packet.decode_float(5)
-				call_deferred("emit_signal", "cursor_received", Vector2(cursor_u, cursor_v))
-				
-				_decode_mutex.lock()
-				_frame_queue.append({
-					"bytes": video_data,
-					"is_key": (type == 1),
-					"time": Time.get_ticks_msec()
-				})
-				_decode_mutex.unlock()
-				_decode_semaphore.post()
-				
-			elif type == 3:
-				# Audio packet (stateless IMA ADPCM)
-				var adpcm_data = packet.slice(1)
-				_handle_audio_packet(adpcm_data)
-				
-		OS.delay_msec(1) # Keep CPU usage sane but latency low
 
 func _decode_loop() -> void:
 	while _running:
