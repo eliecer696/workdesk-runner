@@ -58,8 +58,8 @@ var _prebuffer_size := 28800 # ~600ms at 48kHz (v3.7 Overhaul)
 var _target_playback_fill := 4800 # Keep 100ms in Godot's buffer
 
 func _ready() -> void:
-	print("[DesktopClient] CLIENT v3.7 (Stateless Audio & Network Threading)")
-	emit_signal("status_changed", "Client v3.7 Loaded")
+	print("[DesktopClient] CLIENT v3.7.1 (Stateless Audio & Network Threading - FIXED)")
+	emit_signal("status_changed", "Client v3.7.1 Loaded")
 	
 	# Create shared resources
 	_frame_queue = []
@@ -239,47 +239,6 @@ func _handle_audio_packet(adpcm_data: PackedByteArray) -> void:
 			_audio_buffer = _audio_buffer.slice(_audio_buffer.size() - 24000)
 			print("[Audio] Buffer overflow, catchup triggered")
 
-func _update_audio_buffer() -> void:
-	if not _audio_playback:
-		return
-		
-	if _prebuffering:
-		if _audio_buffer.size() >= _prebuffer_size:
-			_prebuffering = false
-			print("[Audio] Prebuffering complete.")
-		else:
-			return
-			
-func _update_audio_buffer() -> void:
-	if not _audio_playback:
-		return
-		
-	if _prebuffering:
-		if _audio_buffer.size() >= _prebuffer_size:
-			_prebuffering = false
-			print("[Audio] Prebuffering complete, starting playback.")
-			emit_signal("status_changed", "Audio Stream: Playing")
-		else:
-			return # Keep buffering
-			
-	# Push samples to fill the Godot buffer
-	var frames_needed = _audio_playback.get_frames_available()
-	if frames_needed > 0 and _audio_buffer.size() > 0:
-		var to_push = min(_audio_buffer.size(), frames_needed)
-		var push_data = _audio_buffer.slice(0, to_push)
-		_audio_playback.push_buffer(push_data)
-		_audio_buffer = _audio_buffer.slice(to_push)
-
-func _handle_audio_packet(adpcm_data: PackedByteArray) -> void:
-	# Decoding IMA ADPCM in C++ GDExtension (returns PackedVector2Array)
-	var samples: PackedVector2Array = _h264_decoder.decode_audio(adpcm_data)
-	
-	_audio_buffer.append_array(samples)
-	
-	# Auto-catchup: If buffer is huge (>1200ms), drop older samples to reduce latency
-	if _audio_buffer.size() > 57600:
-		_audio_buffer = _audio_buffer.slice(_audio_buffer.size() - 28800)
-		print("[Audio] Jitter buffer overflow - skipping ahead to reduce latency")
 
 func _update_audio_buffer() -> void:
 	if not _audio_playback:
