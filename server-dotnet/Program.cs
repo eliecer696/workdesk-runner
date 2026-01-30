@@ -17,7 +17,7 @@ internal static class Program
     // CONFIGURATION - Optimized for Virtual Desktop-like performance
     // ═══════════════════════════════════════════════════════════════════════════
     private const int Port = 9000;
-    private const int TargetFps = 60;           // Match Quest 3 refresh rate
+    private const int TargetFps = 60;           // Match monitor refresh rate as requested
     private const int BitrateMbps = 50;         // H.264 bitrate (adjustable 20-150)
     private const int MaxClients = 4;
     private const bool UseHardwareCapture = true;   // DXGI vs GDI+
@@ -29,10 +29,8 @@ internal static class Program
     private static readonly ConcurrentDictionary<Guid, ClientState> Clients = new();
     private static Channel<CapturedFrame>? _captureChannel;
     private static Channel<EncodedFrame>? _encodeChannel;
-    private static Channel<AudioFrame>? _audioChannel; // NEW
     private static DxgiCapture? _dxgiCapture;
     private static H264Encoder? _h264Encoder;
-    private static AudioCapture? _audioCapture; // NEW
     private static bool _requestKeyframe = false;
     private static int _frameCount = 0;
 
@@ -55,14 +53,12 @@ internal static class Program
     // ═══════════════════════════════════════════════════════════════════════════
     private record CapturedFrame(byte[] Data, int Width, int Height, float CursorU, float CursorV, long FrameNumber);
     private record EncodedFrame(byte[] Data, float CursorU, float CursorV, bool IsKeyFrame, long FrameNumber);
-    // AudioFrame is defined in AudioCapture.cs
     
     private class ClientState
     {
         public WebSocket Socket { get; init; } = null!;
         public bool NeedsKeyframe { get; set; } = true;
         public long LastFrameSent { get; set; } = -1;
-        public SemaphoreSlim SendLock { get; } = new(1, 1); // For thread safety
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -102,30 +98,11 @@ internal static class Program
             SingleWriter = true
         });
 
-        // Audio Channel - Unbounded to avoid dropped audio glitches
-        _audioChannel = Channel.CreateUnbounded<AudioFrame>(new UnboundedChannelOptions
-        {
-            SingleReader = true,
-            SingleWriter = true
-        });
-        
-        // Start Audio Capture
-        _audioCapture = new AudioCapture(_audioChannel.Writer);
-        try
-        {
-            _audioCapture.Start();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Main] Audio capture failed: {ex.Message}");
-        }
-
         // Start pipeline tasks
         var cts = new CancellationTokenSource();
         var captureTask = Task.Run(() => CaptureLoopAsync(cts.Token));
         var encodeTask = Task.Run(() => EncodeLoopAsync(cts.Token));
         var sendTask = Task.Run(() => SendLoopAsync(cts.Token));
-        var audioTask = Task.Run(() => AudioSendLoopAsync(cts.Token)); // NEW
 
         // Start web server
         var builder = WebApplication.CreateBuilder(args);
@@ -482,56 +459,14 @@ internal static class Program
 
     private static async Task SendToClientAsync(ClientState client, byte[] payload, long frameNumber)
     {
-        if (client.Socket.State != WebSocketState.Open) return;
-
-        // Thread-safe send
-        await client.SendLock.WaitAsync();
         try
         {
             await client.Socket.SendAsync(payload, WebSocketMessageType.Binary, true, CancellationToken.None);
-            if (frameNumber >= 0) // Only update frame number for video
-                client.LastFrameSent = frameNumber;
+            client.LastFrameSent = frameNumber;
         }
         catch
         {
             // Client will be removed when receive loop detects disconnect
-        }
-        finally
-        {
-            client.SendLock.Release();
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PIPELINE: AUDIO SEND LOOP
-    // ═══════════════════════════════════════════════════════════════════════════
-    private static async Task AudioSendLoopAsync(CancellationToken ct)
-    {
-        Console.WriteLine("[Send] Audio Loop started");
-
-        await foreach (var frame in _audioChannel!.Reader.ReadAllAsync(ct))
-        {
-            if (Clients.IsEmpty) continue;
-
-            // Build audio packet: [Type:2][Data:N]
-            // Type 2 = Audio
-            var payload = new byte[1 + frame.Data.Length];
-            payload[0] = 2; // Type = Audio
-            frame.Data.CopyTo(payload, 1);
-
-            // Send to all clients
-            var sendTasks = new List<Task>();
-            foreach (var (_, client) in Clients)
-            {
-                if (client.Socket.State != WebSocketState.Open) continue;
-                // FrameNumber -1 implies Audio (no tracking needed)
-                sendTasks.Add(SendToClientAsync(client, payload, -1));
-            }
-
-            if (sendTasks.Count > 0)
-            {
-                await Task.WhenAll(sendTasks);
-            }
         }
     }
 }

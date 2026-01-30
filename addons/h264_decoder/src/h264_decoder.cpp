@@ -12,6 +12,18 @@ extern "C" {
 #include <libavcodec/jni.h>
 }
 
+#if defined(__ANDROID__) || defined(ANDROID_ENABLED)
+#include <jni.h>
+static JavaVM *g_jvm = nullptr;
+
+// JNI_OnLoad is called when the shared library is loaded by the JVM/Android
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
+    g_jvm = vm;
+    // Don't log here as Godot IO might not be ready, or use standard printf
+    return JNI_VERSION_1_6;
+}
+#endif
+
 using namespace godot;
 
 void H264Decoder::_bind_methods() {
@@ -43,9 +55,25 @@ bool H264Decoder::initialize(int expected_width, int expected_height) {
     // Check for Android platform using Godot's define or standard define
     #if defined(__ANDROID__) || defined(ANDROID_ENABLED)
     UtilityFunctions::print("[H264Decoder] Android platform detected.");
+    
+    if (g_jvm) {
+        // Register JavaVM with FFmpeg so it can access MediaCodec
+        if (av_jni_set_java_vm(g_jvm, nullptr) == 0) {
+            UtilityFunctions::print("[H264Decoder] Registered JavaVM with FFmpeg.");
+        } else {
+            UtilityFunctions::printerr("[H264Decoder] Failed to register JavaVM with FFmpeg!");
+        }
+    } else {
+        UtilityFunctions::printerr("[H264Decoder] JavaVM not found! (JNI_OnLoad not called?)");
+    }
 
-    // Removed JNI/MediaCodec support due to stability issues
-    // Falling back to software decoder logic
+    UtilityFunctions::print("[H264Decoder] Checking for h264_mediacodec...");
+    codec = avcodec_find_decoder_by_name("h264_mediacodec");
+    if (codec) {
+        UtilityFunctions::print("[H264Decoder] Found h264_mediacodec! Using hardware decoding.");
+    } else {
+        UtilityFunctions::print("[H264Decoder] h264_mediacodec not found in FFmpeg build.");
+    }
     #else
     // Try NVDEC on desktop
     codec = avcodec_find_decoder_by_name("h264_cuvid");
@@ -116,8 +144,6 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
         }
     }
 
-    // UtilityFunctions::print("[H264] Decode start. Bytes: ", h264_data.size());
-
     // Set packet data
     packet->data = const_cast<uint8_t*>(h264_data.ptr());
     packet->size = h264_data.size();
@@ -125,7 +151,7 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
     // Send packet to decoder
     int ret = avcodec_send_packet(codec_ctx, packet);
     if (ret < 0 && ret != AVERROR(EAGAIN)) {
-        UtilityFunctions::printerr("[H264] Send packet failed: ", ret);
+        // Not an error if decoder needs more data
         if (ret != AVERROR_EOF) {
             return result;
         }
@@ -134,74 +160,56 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
     // Receive decoded frame
     ret = avcodec_receive_frame(codec_ctx, frame);
     if (ret < 0) {
-        if (ret != AVERROR(EAGAIN)) {
-            UtilityFunctions::printerr("[H264] Receive frame failed: ", ret);
-        }
+        // EAGAIN means we need to send more packets
+        // This is normal for the first few frames
         return result;
     }
 
-    // UtilityFunctions::print("[H264] Got frame: ", frame->width, "x", frame->height, " fmt:", frame->format);
+    // ═══════════════════════════════════════════════════════════════════════════
+    // OPTIMIZATION: Return raw YUV data instead of converting to RGBA with sws_scale
+    // This effectively 0-copies the heavy lifting to the GPU shader.
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    // Update dimensions and scaler if needed
-    if (frame->width != width || frame->height != height || !sws_ctx) {
+    // Update dimensions if changed
+    if (frame->width != width || frame->height != height) {
         width = frame->width;
         height = frame->height;
-        
-        if (sws_ctx) {
-            sws_freeContext(sws_ctx);
+        UtilityFunctions::print("[H264Decoder] Frame size: ", width, "x", height, " (Outputting YUV)");
+    }
+
+    // Prepare YUV buffer (Y + U + V)
+    // Assuming YUV420P: Y is full res, U and V are half width/height
+    int y_size = width * height;
+    int uv_width = width / 2; // Stride might be different but we assume standard 420
+    int uv_height = height / 2;
+    int uv_size = uv_width * uv_height;
+    int total_size = y_size + (uv_size * 2);
+
+    result.resize(total_size);
+    uint8_t* dst = result.ptrw();
+
+    // Copy Y Plane
+    if (frame->data[0]) {
+        for (int i = 0; i < height; i++) {
+            memcpy(dst + (i * width), frame->data[0] + (i * frame->linesize[0]), width);
         }
-        
-        sws_ctx = sws_getContext(
-            width, height, (AVPixelFormat)frame->format,
-            width, height, AV_PIX_FMT_RGBA,
-            SWS_BILINEAR, nullptr, nullptr, nullptr
-        );
-        
-        if (!sws_ctx) {
-            UtilityFunctions::printerr("[H264] Failed to create scaler");
-            return result;
+    }
+
+    // Copy U Plane
+    if (frame->data[1]) {
+        uint8_t* u_dst = dst + y_size;
+        for (int i = 0; i < uv_height; i++) {
+            memcpy(u_dst + (i * uv_width), frame->data[1] + (i * frame->linesize[1]), uv_width);
         }
-        
-        // Resize buffer only when dim changes
-        int buffer_size = av_image_get_buffer_size(AV_PIX_FMT_RGBA, width, height, 1); // Align 1 for tight packing
-        rgb_buffer.resize(buffer_size);
-        UtilityFunctions::print("[H264] Resized buffer to: ", buffer_size);
     }
 
-    // SAFETY: Re-fill arrays every time because Godot's PackedByteArray ptrW can change
-    // Also using alignment 1 to match Godot's packed expectation if needed, though 32 is usually safer for FFmpeg.
-    // Let's force 1 for safety with pure byte array copying? No, 32 is standard.
-    // Ensure the resize was sufficient.
-    int buffer_size = av_image_get_buffer_size(AV_PIX_FMT_RGBA, width, height, 1);
-    
-    // Check buffer size
-    if (rgb_buffer.size() < buffer_size) {
-         rgb_buffer.resize(buffer_size);
+    // Copy V Plane
+    if (frame->data[2]) {
+        uint8_t* v_dst = dst + y_size + uv_size;
+        for (int i = 0; i < uv_height; i++) {
+            memcpy(v_dst + (i * uv_width), frame->data[2] + (i * frame->linesize[2]), uv_width);
+        }
     }
-
-    av_image_fill_arrays(
-        frame_rgb->data, frame_rgb->linesize,
-        rgb_buffer.ptrw(), AV_PIX_FMT_RGBA,
-        width, height, 1
-    );
-
-    // UtilityFunctions::print("[H264] Scaling...");
-    // Convert to RGBA
-    sws_scale(sws_ctx,
-        frame->data, frame->linesize, 0, height,
-        frame_rgb->data, frame_rgb->linesize
-    );
-
-    // Copy to output buffer (RGBA, 4 bytes per pixel)
-    int output_size = width * height * 4;
-    result.resize(output_size);
-    if (result.size() != output_size) {
-          UtilityFunctions::printerr("[H264] Result resize failed");
-          return result;
-    }
-    
-    // UtilityFunctions::print("[H264] Copying to result...");
-    memcpy(result.ptrw(), rgb_buffer.ptr(), output_size);
 
     return result;
 }

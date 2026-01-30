@@ -11,7 +11,7 @@ extends Node3D
 var _screen_material: StandardMaterial3D
 var _cursor_sprite: Sprite3D
 var _cursor_uv: Vector2 = Vector2(0.5, 0.5)
-var _screen_size: Vector2 = Vector2(2.4, 1.35)  # Must match the screen mesh size
+var _screen_size: Vector2 = Vector2(2.4, 1.35) # Must match the screen mesh size
 
 func _ready() -> void:
 	_setup_xr()
@@ -47,14 +47,22 @@ func _apply_openxr_action_map(xr_interface: XRInterface) -> void:
 func _setup_screen_material() -> void:
 	if not screen_mesh:
 		return
-	_screen_material = StandardMaterial3D.new()
-	_screen_material.roughness = 1.0
-	_screen_material.metallic = 0.0
-	_screen_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED  # No lighting effects
-	_screen_material.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR  # Smooth filtering
+	
+	# Load YUV Shader
+	var shader = load("res://shaders/yuv_shader.gdshader")
+	if not shader:
+		push_error("Failed to load yuv_shader.gdshader")
+		return
+		
+	var material = ShaderMaterial.new()
+	material.shader = shader
+	material.set_shader_parameter("is_yuv", false) # Default to RGB
+	
 	if desktop_viewport:
-		_screen_material.albedo_texture = desktop_viewport.get_texture()
-	screen_mesh.material_override = _screen_material
+		material.set_shader_parameter("yuv_tex", desktop_viewport.get_texture())
+		
+	screen_mesh.material_override = material
+	print("[Main] Screen material setup with YUV shader")
 
 func _setup_cursor() -> void:
 	# Create cursor sprite as child of screen body
@@ -82,9 +90,9 @@ func _setup_cursor() -> void:
 	
 	var cursor_texture := ImageTexture.create_from_image(cursor_image)
 	_cursor_sprite.texture = cursor_texture
-	_cursor_sprite.pixel_size = 0.001  # Scale cursor appropriately
+	_cursor_sprite.pixel_size = 0.001 # Scale cursor appropriately
 	_cursor_sprite.billboard = BaseMaterial3D.BILLBOARD_DISABLED
-	_cursor_sprite.position = Vector3(0, 0, 0.02)  # Slightly in front of screen
+	_cursor_sprite.position = Vector3(0, 0, 0.02) # Slightly in front of screen
 	_cursor_sprite.modulate = Color(1, 1, 1, 1)
 	
 	screen_body.add_child(_cursor_sprite)
@@ -131,19 +139,22 @@ func _on_disconnect_pressed() -> void:
 
 var _display_frame_count := 0
 
-func _on_frame_received(texture: Texture2D) -> void:
+func _on_frame_received(texture: Texture2D, is_yuv: bool) -> void:
 	_display_frame_count += 1
 	if _display_frame_count % 60 == 1:
-		print("[Main] Displaying frame #", _display_frame_count, " texture: ", texture.get_width(), "x", texture.get_height())
-	if _screen_material:
-		_screen_material.albedo_texture = texture
+		print("[Main] Displaying frame #", _display_frame_count, " tex: ", texture.get_width(), "x", texture.get_height(), " YUV:", is_yuv)
+	
+	if screen_mesh.material_override is ShaderMaterial:
+		var mat = screen_mesh.material_override as ShaderMaterial
+		mat.set_shader_parameter("yuv_tex", texture)
+		mat.set_shader_parameter("is_yuv", is_yuv)
 
 func _on_cursor_received(uv: Vector2) -> void:
 	_cursor_uv = uv
 	if _cursor_sprite:
 		# Convert UV (0-1) to local position on screen
 		var local_x := (uv.x - 0.5) * _screen_size.x
-		var local_y := (0.5 - uv.y) * _screen_size.y  # Flip Y
+		var local_y := (0.5 - uv.y) * _screen_size.y # Flip Y
 		_cursor_sprite.position = Vector3(local_x, local_y, 0.02)
 
 func _on_status_changed(text: String) -> void:

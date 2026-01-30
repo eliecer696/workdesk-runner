@@ -1,8 +1,9 @@
 extends Node
 ## Optimized Desktop Stream Client
 ## Handles H.264 or JPEG frames from server with texture reuse
+## Now using threaded decoding to prevent VR stutter
 
-signal frame_received(texture: Texture2D)
+signal frame_received(texture: Texture2D, is_yuv: bool)
 signal cursor_received(uv: Vector2)
 signal status_changed(text: String)
 signal connection_changed(connected: bool)
@@ -20,10 +21,15 @@ var _current_delay: float = 1.0
 var _connecting := false
 
 # ═══════════════════════════════════════════════════════════════════════════
-# OPTIMIZATION: Texture reuse to avoid GPU allocations per frame
+# THREADING & OPTIMIZATION
 # ═══════════════════════════════════════════════════════════════════════════
+var _decode_thread: Thread
+var _decode_semaphore: Semaphore
+var _decode_mutex: Mutex
+var _frame_queue: Array[Dictionary] = [] # Stores {bytes: PackedByteArray, start_time: int}
+var _running := false
+
 var _reusable_texture: ImageTexture = null
-var _reusable_image: Image = null
 var _last_frame_size: Vector2i = Vector2i.ZERO
 
 # Performance tracking
@@ -37,50 +43,27 @@ var _pframes_received := 0
 
 # H.264 decode state
 var _waiting_for_keyframe := true
-var _h264_buffer := PackedByteArray()
 var _h264_decoder = null # H264Decoder GDExtension instance
 var _use_h264 := true # Try H.264 first, fall back to JPEG if extension not available
-
-# Audio
-var _audio_player: AudioStreamPlayer
-var _audio_playback: AudioStreamGeneratorPlayback
-var _audio_sample_rate := 48000.0
-
-# Threading
-var _decode_thread: Thread
-var _decode_semaphore: Semaphore
-var _decode_mutex: Mutex
-var _frame_queue: Array = []
-var _exit_thread := false
 
 func _ready() -> void:
 	_current_delay = reconnect_delay_sec
 	_next_reconnect_time = reconnect_delay_sec
 	
-	# Initialize Audio
-	_audio_player = AudioStreamPlayer.new()
-	add_child(_audio_player)
-	var generator = AudioStreamGenerator.new()
-	generator.mix_rate = _audio_sample_rate
-	generator.buffer_length = 0.1 # 100ms buffer
-	_audio_player.stream = generator
-	_audio_player.play()
-	_audio_playback = _audio_player.get_stream_playback()
-	print("[DesktopClient] Audio initialized at ", _audio_sample_rate, "Hz")
-
 	# Initialize Threading
+	_decode_thread = Thread.new()
 	_decode_semaphore = Semaphore.new()
 	_decode_mutex = Mutex.new()
-	_decode_thread = Thread.new()
+	_running = true
 	_decode_thread.start(_decode_loop)
-
+	
 	# Try to initialize H.264 decoder GDExtension
 	if ClassDB.class_exists("H264Decoder"):
 		_h264_decoder = ClassDB.instantiate("H264Decoder")
 		if _h264_decoder:
 			print("[DesktopClient] H264Decoder extension loaded successfully")
 			if _h264_decoder.has_method("initialize"):
-				_h264_decoder.initialize(1920, 1080)
+				_h264_decoder.initialize()
 		else:
 			print("[DesktopClient] Failed to instantiate H264Decoder")
 			_use_h264 = false
@@ -90,6 +73,14 @@ func _ready() -> void:
 	
 	if auto_connect:
 		connect_to_server()
+
+func _exit_tree() -> void:
+	disconnect_from_server()
+	# Stop thread
+	_running = false
+	_decode_semaphore.post()
+	if _decode_thread.is_started():
+		_decode_thread.wait_to_finish()
 
 func connect_to_server() -> void:
 	if _ws != null and _ws.get_ready_state() == WebSocketPeer.STATE_OPEN:
@@ -103,10 +94,10 @@ func connect_to_server() -> void:
 	# Create a fresh WebSocketPeer
 	_ws = WebSocketPeer.new()
 	
-	# Larger buffers for video frames (H.264 frames are smaller but we need headroom)
-	_ws.inbound_buffer_size = 2 * 1024 * 1024 # 2MB
+	# Larger buffers for video frames
+	_ws.inbound_buffer_size = 4 * 1024 * 1024 # 4MB buffer for 4k support
 	_ws.outbound_buffer_size = 64 * 1024
-	_ws.max_queued_packets = 16 # More packets for higher FPS
+	_ws.max_queued_packets = 32
 	
 	_ws.handshake_headers = PackedStringArray([
 		"User-Agent: Godot/4.6",
@@ -179,133 +170,10 @@ func _process(delta: float) -> void:
 	# Process all available packets
 	while _ws.get_available_packet_count() > 0:
 		var packet := _ws.get_packet()
-		# Only handle binary packets as video frames
-		if _ws.was_string_packet():
-			pass # Handle text messages if needed
-		else:
-			_handle_frame(packet)
-
-func _exit_tree() -> void:
-	# Clean exit thread
-	_exit_thread = true
-	if _decode_semaphore:
-		_decode_semaphore.post()
-	if _decode_thread and _decode_thread.is_started():
-		_decode_thread.wait_to_finish()
-	
-	disconnect_from_server()
-	
-	if _h264_decoder:
-		if _h264_decoder.has_method("cleanup"):
-			_h264_decoder.cleanup()
-		_h264_decoder = null
-
-func _decode_loop() -> void:
-	while not _exit_thread:
-		_decode_semaphore.wait()
-		if _exit_thread:
-			break
-			
-		_decode_mutex.lock()
-		if _frame_queue.is_empty():
-			_decode_mutex.unlock()
-			continue
-			
-		var frame_data = _frame_queue.pop_front()
-		_decode_mutex.unlock()
-		
-		var is_keyframe = frame_data.is_keyframe
-		var data_bytes = frame_data.bytes
-		
-		# Decode off-thread
-		var image: Image = null
-		var decode_success := false
-		
-		if _use_h264 and _h264_decoder:
-			# print("[Thread] Decoding frame... Size: ", data_bytes.size())
-			var rgba_data: PackedByteArray = _h264_decoder.decode_frame(data_bytes)
-			# print("[Thread] Decode returned. Size: ", rgba_data.size())
-			if rgba_data.size() > 0:
-				var w: int = _h264_decoder.get_width()
-				var h: int = _h264_decoder.get_height()
-				image = Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba_data)
-				decode_success = true
-			elif is_keyframe:
-				_h264_decoder.reset()
-
-		
-		# Fallback to JPEG if needed (still off-thread!)
-		if not decode_success:
-			image = Image.new()
-			var err := image.load_jpg_from_buffer(data_bytes)
-			if err != OK:
-				err = image.load_png_from_buffer(data_bytes)
-			if err == OK:
-				decode_success = true
-		
-		if decode_success and image:
-			# Send back to main thread for texture update
-			call_deferred("_update_texture_on_main_thread", image)
-
-func _update_texture_on_main_thread(image: Image) -> void:
-	# OPTIMIZATION: Reuse texture logic here, on main thread where it's safe
-	var frame_size := Vector2i(image.get_width(), image.get_height())
-	
-	if _reusable_texture == null or frame_size != _last_frame_size:
-		_reusable_texture = ImageTexture.create_from_image(image)
-		_last_frame_size = frame_size
-		# print("[DesktopClient] Created texture: ", frame_size)
-	else:
-		_reusable_texture.update(image)
-	
-	emit_signal("frame_received", _reusable_texture)
-	
-	# Performance tracking
-	_frame_count += 1
-	_frames_this_second += 1
-	
-	if _frame_count % 300 == 1:
-		print("[DesktopClient] Frame #%d, %dx%d, FPS: %d (I:%d P:%d) [Threaded]" % [
-			_frame_count, frame_size.x, frame_size.y,
-			_current_fps, _keyframes_received, _pframes_received
-		])
-	while _ws.get_available_packet_count() > 0:
-		var packet := _ws.get_packet()
 		if _ws.was_string_packet():
 			_handle_text(packet.get_string_from_utf8())
 		else:
-			_handle_frame(packet)
-
-func _handle_audio_packet(bytes: PackedByteArray) -> void:
-	if not _audio_playback:
-		return
-		
-	# Payload format: [Type:1][PCM_FLOAT_L][PCM_FLOAT_R][...]
-	# Skip type byte (index 0)
-	var offset := 1
-	var available_bytes := bytes.size() - 1
-	var sample_count := available_bytes / 8 # 4 bytes/float * 2 channels
-	
-	print("[Audio] Packet: %d bytes, %d samples" % [bytes.size(), sample_count])
-	
-	if sample_count <= 0:
-		return
-		
-	var buffer := PackedVector2Array()
-	buffer.resize(sample_count)
-	
-	# GDScript loop for decoding (performant enough for small chunks)
-	# print("[Audio] Decoding...")
-	for i in range(sample_count):
-		var l := bytes.decode_float(offset)
-		var r := bytes.decode_float(offset + 4)
-		buffer[i] = Vector2(l, r)
-		offset += 8
-	
-	# Push to audio server
-	if _audio_playback.get_frames_available() >= sample_count:
-		_audio_playback.push_buffer(buffer)
-		print("[Audio] Pushed buffer")
+			_handle_frame_packet(packet)
 
 func _get_error_name(err: int) -> String:
 	match err:
@@ -336,98 +204,163 @@ func _handle_text(text: String) -> void:
 			emit_signal("status_changed", String(data.text))
 
 # ═══════════════════════════════════════════════════════════════════════════
-# FRAME HANDLING - Optimized with texture reuse
+# THREADED DECODING LOGIC
 # ═══════════════════════════════════════════════════════════════════════════
 
-func _handle_frame(bytes: PackedByteArray) -> void:
-	# New format: [FrameType:1][CursorU:4][CursorV:4][Data:N]
+func _handle_frame_packet(bytes: PackedByteArray) -> void:
+	# Extract cursor data IMMEDIATELY on main thread for minimum latency
+	if bytes.size() >= 9:
+		# New format: [FrameType:1][CursorU:4][CursorV:4][Data:N]
+		if bytes[0] <= 1: # Basic validation
+			var cursor_u := bytes.decode_float(1)
+			var cursor_v := bytes.decode_float(5)
+			emit_signal("cursor_received", Vector2(cursor_u, cursor_v))
+	elif bytes.size() >= 8:
+		# Old format
+		var cursor_u := bytes.decode_float(0)
+		var cursor_v := bytes.decode_float(4)
+		emit_signal("cursor_received", Vector2(cursor_u, cursor_v))
+	
+	# Offload decoding to thread
+	_decode_mutex.lock()
+	_frame_queue.push_back({
+		"bytes": bytes,
+		"time": Time.get_ticks_usec()
+	})
+	_decode_mutex.unlock()
+	_decode_semaphore.post()
+
+func _decode_loop() -> void:
+	while _running:
+		_decode_semaphore.wait()
+		if not _running: break
+		
+		# Process one frame at a time from the queue
+		var frame_data = null
+		
+		_decode_mutex.lock()
+		if not _frame_queue.is_empty():
+			frame_data = _frame_queue.pop_front()
+		_decode_mutex.unlock()
+		
+		if frame_data:
+			_decode_task(frame_data.bytes, frame_data.time)
+
+func _decode_task(bytes: PackedByteArray, start_time: int) -> void:
+	# New frame format: [FrameType:1][CursorU:4][CursorV:4][Data:N]
 	# FrameType: 0 = P-frame, 1 = I-frame (keyframe)
+	var frame_type := 0
+	var frame_data: PackedByteArray
+	
 	if bytes.size() < 10:
-		# Try old format for backwards compatibility
-		_handle_frame_legacy(bytes)
-		return
+		# Legacy format fallback
+		if bytes.size() < 9: return
+		frame_data = bytes.slice(8)
+		# Assume keyframes for JPEG legacy
+		frame_type = 1
+	else:
+		frame_type = bytes[0]
+		frame_data = bytes.slice(9)
 	
-	# Parse header on main thread (very fast)
-	var frame_type := bytes[0] # 0 = P-frame, 1 = I-frame, 2 = Audio
-	
-	print("[Net] Packet Type: ", frame_type, " Size: ", bytes.size())
-
-	# HANDLE AUDIO PACKET
-	if frame_type == 2:
-		# _handle_audio_packet(bytes)
-		return
-
-	var cursor_u: float = bytes.decode_float(1)
-	var cursor_v: float = bytes.decode_float(5)
-	var frame_data := bytes.slice(9)
-	
-	# Emit cursor position immediately
-	emit_signal("cursor_received", Vector2(cursor_u, cursor_v))
-	
-	# Track keyframes
 	var is_keyframe := (frame_type == 1)
+	
+	# IMPORTANT: We must update waiting_for_keyframe state carefully.
+	# Since this is running in a thread, we use a local check or careful sync.
+	# However, gdscript variables are generally accessible. 
+	# To be safe, we'll read property.
+	
+	if is_keyframe:
+		# We're good
+		pass
+	elif _waiting_for_keyframe:
+		# Skip P-frames if waiting for keyframe
+		if _frame_count % 60 == 0:
+			# Print on main thread using call_deferred? Or just print (thread safe usually)
+			print("[DesktopClient] Waiting for keyframe... (received P-frame)")
+		return
+
+	# Decode the image - try H.264 first, then JPEG
+	var image: Image = null
+	var decode_success := false
+	
+	if _use_h264 and _h264_decoder:
+		# Blocking decode call
+		var decoded_data: PackedByteArray = _h264_decoder.decode_frame(frame_data)
+		var data_size = decoded_data.size()
+		
+		if data_size > 0:
+			var w: int = _h264_decoder.get_width()
+			var h: int = _h264_decoder.get_height()
+			var yuv_size = int(float(w * h) * 1.5)
+			var rgba_size = w * h * 4
+			
+			if data_size == yuv_size:
+				# YUV 4:2:0 packed in L8 format (1 byte per "pixel" in texture terms)
+				# Texture height needs to be 1.5x original height
+				image = Image.create_from_data(w, int(h * 1.5), false, Image.FORMAT_L8, decoded_data)
+				decode_success = true
+			elif data_size == rgba_size:
+				# Standard RGBA
+				image = Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, decoded_data)
+				decode_success = true
+			else:
+				print("[DesktopClient] Unexpected data size: %d (Expected YUV:%d or RGB:%d)" % [data_size, yuv_size, rgba_size])
+		else:
+			print("[DesktopClient] H.264 decode output empty")
+			if is_keyframe:
+				_h264_decoder.reset()
+	
+	# Fallback to JPEG
+	if not decode_success:
+		image = Image.new()
+		var err := image.load_jpg_from_buffer(frame_data)
+		if err != OK:
+			image.load_png_from_buffer(frame_data)
+		if not image.is_empty():
+			decode_success = true
+		else:
+			image = null
+
+	if decode_success and image:
+		# Send valid image back to main thread
+		var elapsed = (Time.get_ticks_usec() - start_time) / 1000.0
+		
+		# We pass the image and metadata back
+		call_deferred("_on_frame_decoded", image, elapsed, is_keyframe)
+
+func _on_frame_decoded(image: Image, decode_time: float, is_keyframe: bool) -> void:
+	if image == null: return
+	
+	# Update H.264 state on main thread
 	if is_keyframe:
 		_keyframes_received += 1
 		_waiting_for_keyframe = false
 	else:
 		_pframes_received += 1
-	
-	# Skip P-frames until we get a keyframe (for H.264)
-	if _waiting_for_keyframe and not is_keyframe:
-		return
-	
-	# DEBUG: BYPASS THREAD TO TEST STABILITY
-	# _decode_mutex.lock()
-	# if _frame_queue.size() > 2:
-	# 	_frame_queue.pop_front()
-	# _frame_queue.append({ "bytes": frame_data, "is_keyframe": is_keyframe })
-	# _decode_mutex.unlock()
-	# _decode_semaphore.post()
-	
-	# DIRECT DECODE (Main Thread)
-	var image: Image = null
-	var decode_success := false
-	
-	if _use_h264 and _h264_decoder:
-		var rgba_data: PackedByteArray = _h264_decoder.decode_frame(frame_data)
-		if rgba_data.size() > 0:
-			var w: int = _h264_decoder.get_width()
-			var h: int = _h264_decoder.get_height()
-			image = Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, rgba_data)
-			decode_success = true
-		elif is_keyframe:
-			_h264_decoder.reset()
-			
-	if decode_success and image:
-		_update_texture_on_main_thread(image)
-	
 
-func _handle_frame_legacy(bytes: PackedByteArray) -> void:
-	# Old format: [CursorU:4][CursorV:4][JPEG:N]
-	if bytes.size() < 9:
-		return
-	
-	var cursor_u := bytes.decode_float(0)
-	var cursor_v := bytes.decode_float(4)
-	emit_signal("cursor_received", Vector2(cursor_u, cursor_v))
-	
-	var jpeg_data := bytes.slice(8)
-	var image := Image.new()
-	var err := image.load_jpg_from_buffer(jpeg_data)
-	if err != OK:
-		return
-	
-	# Texture reuse
+	# Reuse texture
 	var frame_size := Vector2i(image.get_width(), image.get_height())
-	if _reusable_texture == null or frame_size != _last_frame_size:
+	
+	if _reusable_texture == null or frame_size != _last_frame_size or _reusable_texture.get_format() != image.get_format():
 		_reusable_texture = ImageTexture.create_from_image(image)
 		_last_frame_size = frame_size
+		print("[DesktopClient] Created texture: %dx%d fmt=%d" % [frame_size.x, frame_size.y, image.get_format()])
 	else:
 		_reusable_texture.update(image)
 	
-	emit_signal("frame_received", _reusable_texture)
+	var is_yuv = (image.get_format() == Image.FORMAT_L8)
+	emit_signal("frame_received", _reusable_texture, is_yuv)
+	
+	# Stats
 	_frame_count += 1
 	_frames_this_second += 1
+	_decode_time_ms = decode_time
+	
+	if _frame_count % 300 == 1:
+		print("[DesktopClient] Frame #%d, %dx%d, decode: %.1fms, FPS: %d (I:%d P:%d)" % [
+			_frame_count, frame_size.x, frame_size.y, _decode_time_ms,
+			_current_fps, _keyframes_received, _pframes_received
+		])
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PUBLIC API
