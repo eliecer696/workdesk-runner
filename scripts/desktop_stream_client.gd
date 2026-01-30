@@ -268,6 +268,10 @@ func _handle_frame_packet(bytes: PackedByteArray) -> void:
 	_decode_semaphore.post()
 
 func _handle_audio_packet(adpcm_data: PackedByteArray) -> void:
+	if not _h264_decoder:
+		# If decoder failed to load or isn't ready, skip audio processing to avoid crash
+		return
+		
 	# Decoding IMA ADPCM in C++ GDExtension (returns PackedVector2Array)
 	var samples: PackedVector2Array = _h264_decoder.decode_audio(adpcm_data)
 	
