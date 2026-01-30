@@ -174,13 +174,14 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
     if (frame->width != width || frame->height != height) {
         width = frame->width;
         height = frame->height;
-        UtilityFunctions::print("[H264Decoder] Frame size: ", width, "x", height, " (Outputting YUV)");
+        UtilityFunctions::print("[H264Decoder] Frame size: ", width, "x", height, 
+            " Fmt:", (int)frame->format, " (Outputting YUV)");
     }
 
     // Prepare YUV buffer (Y + U + V)
     // Assuming YUV420P: Y is full res, U and V are half width/height
     int y_size = width * height;
-    int uv_width = width / 2; // Stride might be different but we assume standard 420
+    int uv_width = width / 2; 
     int uv_height = height / 2;
     int uv_size = uv_width * uv_height;
     int total_size = y_size + (uv_size * 2);
@@ -188,32 +189,65 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
     result.resize(total_size);
     uint8_t* dst = result.ptrw();
 
-    // Copy Y Plane
+    // Copy Y Plane (Plane 0 is always Y in these formats)
     if (frame->data[0]) {
         for (int i = 0; i < height; i++) {
             memcpy(dst + (i * width), frame->data[0] + (i * frame->linesize[0]), width);
         }
     }
 
-    // Interleave U and V Planes Side-by-Side
-    // Texture Layout:
-    // [         Y Plane (Full Width)         ]
-    // [ U Plane (Half Width) | V Plane (Half) ]
-    
-    if (frame->data[1] && frame->data[2]) {
-        uint8_t* uv_dst_start = dst + y_size;
-        
-        for (int i = 0; i < uv_height; i++) {
-            // Calculate pointers for this row
-            uint8_t* row_dst = uv_dst_start + (i * width);
-            uint8_t* u_src = frame->data[1] + (i * frame->linesize[1]);
-            uint8_t* v_src = frame->data[2] + (i * frame->linesize[2]);
+    // Handle UV Planes based on Format
+    // Target Layout: [ U Plane (Left) | V Plane (Right) ] at bottom
+    uint8_t* uv_dst_start = dst + y_size;
+
+    // Check for standard Planar YUV (YUV420P, YUVJ420P)
+    // Format 0 = YUV420P, 12 = YUVJ420P
+    if (frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUVJ420P) {
+        if (frame->data[1] && frame->data[2]) {
+            for (int i = 0; i < uv_height; i++) {
+                uint8_t* row_dst = uv_dst_start + (i * width);
+                uint8_t* u_src = frame->data[1] + (i * frame->linesize[1]);
+                uint8_t* v_src = frame->data[2] + (i * frame->linesize[2]);
+                
+                memcpy(row_dst, u_src, uv_width);
+                memcpy(row_dst + uv_width, v_src, uv_width);
+            }
+        }
+    } 
+    // Check for Semi-Planar NV12 (Y, then UVUVUV) or NV21 (Y, then VUVUVU)
+    // NV12 = 23, NV21 = 24 (approx)
+    else if (frame->format == AV_PIX_FMT_NV12 || frame->format == AV_PIX_FMT_NV21) {
+        // NV12: Plane 1 contains UVUVUV...
+        if (frame->data[1]) {
+            bool is_nv12 = (frame->format == AV_PIX_FMT_NV12);
             
-            // Copy U to Left Half
-            memcpy(row_dst, u_src, uv_width);
-            
-            // Copy V to Right Half
-            memcpy(row_dst + uv_width, v_src, uv_width);
+            for (int i = 0; i < uv_height; i++) {
+                uint8_t* row_dst = uv_dst_start + (i * width);
+                uint8_t* uv_src_row = frame->data[1] + (i * frame->linesize[1]);
+                
+                // De-interleave UV
+                for (int x = 0; x < uv_width; x++) {
+                    uint8_t b1 = uv_src_row[x * 2];
+                    uint8_t b2 = uv_src_row[x * 2 + 1];
+                    
+                    uint8_t u_val = is_nv12 ? b1 : b2;
+                    uint8_t v_val = is_nv12 ? b2 : b1;
+                    
+                    // Write to U (Left) and V (Right)
+                    row_dst[x] = u_val;
+                    row_dst[uv_width + x] = v_val;
+                }
+            }
+        }
+    }
+    else {
+        // Unknown format - Fill UV with 128 (Grey) to avoid Green screen
+        // This is a safety fallback
+        memset(uv_dst_start, 128, uv_size * 2);
+        static bool warned = false;
+        if (!warned) {
+             UtilityFunctions::printerr("[H264Decoder] Unsupported format: ", (int)frame->format, " Filling UV with grey.");
+             warned = true;
         }
     }
 
