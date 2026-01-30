@@ -8,6 +8,8 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using System.Windows.Forms;
+using NAudio.Wave;
+using NAudio.CoreAudioApi;
 
 namespace WorkdeskServer;
 
@@ -22,6 +24,9 @@ internal static class Program
     private const int MaxClients = 4;
     private const bool UseHardwareCapture = true;   // DXGI vs GDI+
     private const bool UseH264Encoding = true;      // H.264 vs JPEG fallback
+    private const bool EnableAudio = true;          // System Audio Loopback
+    private const int AudioSampleRate = 48000;      // CD Quality
+    private const int AudioChannels = 2;            // Stereo
 
     // ═══════════════════════════════════════════════════════════════════════════
     // STATE
@@ -31,6 +36,8 @@ internal static class Program
     private static Channel<EncodedFrame>? _encodeChannel;
     private static DxgiCapture? _dxgiCapture;
     private static H264Encoder? _h264Encoder;
+    private static IWaveIn? _audioCapture;
+    private static Channel<byte[]>? _audioChannel;
     private static bool _requestKeyframe = false;
     private static long _frameCount = 0;
     
@@ -38,6 +45,7 @@ internal static class Program
     private static long _capturedCount = 0;
     private static long _encodedCount = 0;
     private static long _sentCount = 0;
+    private static long _audioSentCount = 0;
     
     // Constant Stream State
     private static byte[]? _lastFrameBuffer = null;
@@ -108,11 +116,19 @@ internal static class Program
             SingleWriter = true
         });
 
+        _audioChannel = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(200)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = true
+        });
+
         // Start pipeline tasks
         var cts = new CancellationTokenSource();
         var captureTask = Task.Run(() => CaptureLoopAsync(cts.Token));
         var encodeTask = Task.Run(() => EncodeLoopAsync(cts.Token));
         var sendTask = Task.Run(() => SendLoopAsync(cts.Token));
+        var audioTask = EnableAudio ? Task.Run(() => AudioLoopAsync(cts.Token)) : Task.CompletedTask;
 
         // Start web server
         var builder = WebApplication.CreateBuilder(args);
@@ -133,14 +149,15 @@ internal static class Program
         _ = Task.Run(async () => {
              while (!cts.IsCancellationRequested) {
                  await Task.Delay(5000);
-                 Console.WriteLine($"[Stats] Capture Mode: {(_dxgiCapture != null ? "DXGI" : "GDI+")} | Cap: {_capturedCount} Enc: {_encodedCount} Sent: {_sentCount}");
+                 Console.WriteLine($"[Stats] Capture Mode: {(_dxgiCapture != null ? "DXGI" : "GDI+")} | " +
+                     $"Cap: {_capturedCount} Enc: {_encodedCount} VideoSent: {_sentCount} AudioSent: {_audioSentCount}");
              }
         });
 
         await app.RunAsync();
         
         cts.Cancel();
-        await Task.WhenAll(captureTask, encodeTask, sendTask);
+        await Task.WhenAll(captureTask, encodeTask, sendTask, audioTask);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -561,6 +578,139 @@ internal static class Program
             // Client will be removed when receive loop detects disconnect, or we can flag it here
             // For now, just logging on debug if needed, but keeping it silent to avoid spam
             // Console.WriteLine($"[Send] Error sending to client: {ex.Message}");
+        }
+    private static async Task AudioLoopAsync(CancellationToken ct)
+    {
+        Console.WriteLine("[Audio] Loop started (WASAPI Loopback)");
+
+        try
+        {
+            using var capture = new WasapiLoopbackCapture();
+            var encoder = new ImaAdpcmEncoder();
+            
+            capture.DataAvailable += async (s, e) =>
+            {
+                if (Clients.IsEmpty) return;
+
+                // WASAPI Loopback is usually Float32/48kHz/Stereo
+                // Convert to PCM16 first
+                var pcm16 = new short[e.BytesRecorded / 4];
+                for (int i = 0; i < pcm16.Length; i++)
+                {
+                    float sample = BitConverter.ToSingle(e.Buffer, i * 4);
+                    pcm16[i] = (short)(Math.Clamp(sample, -1f, 1f) * 32767);
+                }
+
+                // Encode to IMA ADPCM (4:1)
+                var adpcm = encoder.Encode(pcm16);
+
+                // Build Type 3 packet: [Type:1][Data:N]
+                var payload = new byte[1 + adpcm.Length];
+                payload[0] = 3;
+                adpcm.CopyTo(payload, 1);
+
+                // Pulse to channel for sending
+                await _audioChannel!.Writer.WriteAsync(payload, ct);
+            };
+
+            capture.StartRecording();
+            
+            while (!ct.IsCancellationRequested)
+            {
+                // Parallel Send Loop for Audio
+                await foreach (var payload in _audioChannel!.Reader.ReadAllAsync(ct))
+                {
+                    if (Clients.IsEmpty) continue;
+
+                    var sendTasks = new List<Task>();
+                    foreach (var (id, client) in Clients)
+                    {
+                        if (client.Socket.State == WebSocketState.Open)
+                        {
+                            sendTasks.Add(SendToClientAsync(client, payload, -1)); // -1 means no video frame number
+                        }
+                    }
+
+                    if (sendTasks.Count > 0)
+                    {
+                        _audioSentCount++;
+                        await Task.WhenAll(sendTasks);
+                    }
+                }
+            }
+
+            capture.StopRecording();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Audio] Error: {ex.Message}");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // IMA ADPCM ENCODER
+    // ═══════════════════════════════════════════════════════════════════════════
+    public class ImaAdpcmEncoder
+    {
+        private static readonly int[] IndexTable = {
+            -1, -1, -1, -1, 2, 4, 6, 8,
+            -1, -1, -1, -1, 2, 4, 6, 8
+        };
+
+        private static readonly int[] StepTable = {
+            7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+            50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
+            337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
+            2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899,
+            15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
+        };
+
+        private int _lastSampleL = 0;
+        private int _lastIndexL = 0;
+        private int _lastSampleR = 0;
+        private int _lastIndexR = 0;
+
+        public byte[] Encode(short[] pcm)
+        {
+            // Stereo ADPCM: We interleave L and R nibbles? No, let's just do interleaved samples.
+            // Packet layout: [NibbleL][NibbleR] ...
+            var output = new byte[pcm.Length / 2]; // 4 bits per sample (2 samples per byte)
+            
+            for (int i = 0; i < pcm.Length; i += 2)
+            {
+                byte nibbleL = EncodeSample(pcm[i], ref _lastSampleL, ref _lastIndexL);
+                byte nibbleR = EncodeSample(pcm[i + 1], ref _lastSampleR, ref _lastIndexR);
+                output[i / 2] = (byte)((nibbleL << 4) | (nibbleR & 0x0F));
+            }
+            return output;
+        }
+
+        private byte EncodeSample(int sample, ref int predictedSample, ref int index)
+        {
+            int diff = sample - predictedSample;
+            int step = StepTable[index];
+            int nibble = 0;
+
+            if (diff < 0) { nibble = 8; diff = -diff; }
+            if (diff >= step) { nibble |= 4; diff -= step; }
+            step >>= 1;
+            if (diff >= step) { nibble |= 2; diff -= step; }
+            step >>= 1;
+            if (diff >= step) { nibble |= 1; }
+
+            // Decoder logic to sync predictor
+            int diffq = StepTable[index] >> 3;
+            if ((nibble & 4) != 0) diffq += StepTable[index];
+            if ((nibble & 2) != 0) diffq += StepTable[index] >> 1;
+            if ((nibble & 1) != 0) diffq += StepTable[index] >> 2;
+
+            if ((nibble & 8) != 0) predictedSample -= diffq;
+            else predictedSample += diffq;
+
+            predictedSample = Math.Clamp(predictedSample, -32768, 32767);
+            index = Math.Clamp(index + IndexTable[nibble], 0, 88);
+
+            return (byte)nibble;
         }
     }
 }

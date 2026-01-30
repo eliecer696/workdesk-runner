@@ -41,19 +41,32 @@ var _decode_time_ms := 0.0
 var _keyframes_received := 0
 var _pframes_received := 0
 
-# H.264 decode state
-var _waiting_for_keyframe := true
-var _h264_decoder = null # H264Decoder GDExtension instance
 var _use_h264 := true # Try H.264 first, fall back to JPEG if extension not available
 
+# Audio State
+var _audio_player: AudioStreamPlayer
+var _audio_playback: AudioStreamGeneratorPlayback
+var _audio_generator: AudioStreamGenerator
+var _audio_started := false
+
 func _ready() -> void:
-	print("[DesktopClient] CLIENT v2.7 (Nuclear Color Fix)")
-	emit_signal("status_changed", "Client v2.7 Loaded")
+	print("[DesktopClient] CLIENT v2.8 (IMA ADPCM Audio)")
+	emit_signal("status_changed", "Client v2.8 Loaded")
 	
 	# Create shared resources
 	_frame_queue = []
 	_current_delay = reconnect_delay_sec
 	_next_reconnect_time = reconnect_delay_sec
+	
+	# Initialize Audio
+	_audio_player = AudioStreamPlayer.new()
+	_audio_generator = AudioStreamGenerator.new()
+	_audio_generator.mix_rate = 48000
+	_audio_generator.buffer_length = 0.5
+	_audio_player.stream = _audio_generator
+	add_child(_audio_player)
+	_audio_player.play()
+	_audio_playback = _audio_player.get_stream_playback()
 	
 	# Initialize Threading
 	_decode_thread = Thread.new()
@@ -216,15 +229,20 @@ func _handle_frame_packet(bytes: PackedByteArray) -> void:
 	# Extract cursor data IMMEDIATELY on main thread for minimum latency
 	if bytes.size() >= 9:
 		# New format: [FrameType:1][CursorU:4][CursorV:4][Data:N]
-		# 0=P-Frame, 1=I-Frame, 2=MouseOnly
-		if bytes[0] <= 2:
+		# 0=P-Frame, 1=I-Frame, 2=MouseOnly, 3=Audio
+		var type := bytes[0]
+		
+		if type <= 2:
 			var cursor_u := bytes.decode_float(1)
 			var cursor_v := bytes.decode_float(5)
 			emit_signal("cursor_received", Vector2(cursor_u, cursor_v))
 			
 			# If MouseOnly, stop here (no video data to decode)
-			if bytes[0] == 2:
+			if type == 2:
 				return
+		elif type == 3:
+			_handle_audio_packet(bytes.slice(1))
+			return
 	elif bytes.size() >= 8:
 		# Old format
 		var cursor_u := bytes.decode_float(0)
@@ -239,6 +257,17 @@ func _handle_frame_packet(bytes: PackedByteArray) -> void:
 	})
 	_decode_mutex.unlock()
 	_decode_semaphore.post()
+
+func _handle_audio_packet(adpcm_data: PackedByteArray) -> void:
+	if not _h264_decoder or not _audio_playback:
+		return
+		
+	# Decode IMA ADPCM in C++ GDExtension (returns PackedVector2Array)
+	var samples: PackedVector2Array = _h264_decoder.decode_audio(adpcm_data)
+	
+	# Push to Godot AudioStreamGenerator
+	if samples.size() > 0:
+		_audio_playback.push_buffer(samples)
 
 func _decode_loop() -> void:
 	while _running:

@@ -4,7 +4,7 @@ render_mode unshaded, cull_disabled;
 // Texture containing either RGB image or Packed YUV data
 uniform sampler2D yuv_tex : filter_linear, repeat_disable;
 uniform bool is_yuv = false;
-uniform float saturation : hint_range(0.0, 2.0) = 1.2;
+uniform float saturation : hint_range(0.0, 2.0) = 1.1;
 uniform bool use_full_range = true;
 uniform float contrast = 1.1;
 uniform float brightness = 0.0;
