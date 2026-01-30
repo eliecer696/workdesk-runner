@@ -586,7 +586,14 @@ internal static class Program
         try
         {
             using var capture = new WasapiLoopbackCapture();
-            Console.WriteLine($"[Audio] Capturing from: {capture.ShareMode} device");
+            var format = capture.WaveFormat;
+            Console.WriteLine($"[Audio] Capturing from: {format.SampleRate}Hz {format.Channels}ch {format.BitsPerSample}bit ({capture.ShareMode})");
+            
+            if (format.SampleRate != 48000)
+            {
+                Console.WriteLine("[Audio] WARNING: Host sample rate is NOT 48kHz. This may cause 'cracks' or audio drift.");
+                Console.WriteLine("[Audio] RECOMMENDATION: Set your Windows default playback device to 48000Hz (DVD Quality).");
+            }
             
             var encoder = new ImaAdpcmEncoder();
             

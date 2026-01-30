@@ -51,10 +51,14 @@ var _audio_player: AudioStreamPlayer
 var _audio_playback: AudioStreamGeneratorPlayback
 var _audio_generator: AudioStreamGenerator
 var _audio_started := false
+var _audio_buffer: PackedVector2Array = PackedVector2Array() # Jitter buffer
+var _prebuffering := true
+var _prebuffer_size := 7200 # ~150ms at 48kHz
+var _target_playback_fill := 2400 # Keep 50ms in Godot's buffer
 
 func _ready() -> void:
-	print("[DesktopClient] CLIENT v3.4 (Audio Debug)")
-	emit_signal("status_changed", "Client v3.4 Loaded")
+	print("[DesktopClient] CLIENT v3.5 (Audio Stabilization)")
+	emit_signal("status_changed", "Client v3.5 Loaded")
 	
 	# Create shared resources
 	_frame_queue = []
@@ -160,6 +164,8 @@ func _process(delta: float) -> void:
 				_current_delay = min(_current_delay * 1.5, reconnect_max_delay_sec)
 				_next_reconnect_time = _current_delay
 	
+	_update_audio_buffer()
+	
 	if _ws == null:
 		return
 	
@@ -262,20 +268,36 @@ func _handle_frame_packet(bytes: PackedByteArray) -> void:
 	_decode_semaphore.post()
 
 func _handle_audio_packet(adpcm_data: PackedByteArray) -> void:
-	if not _h264_decoder or not _audio_playback:
-		return
-		
 	# Decoding IMA ADPCM in C++ GDExtension (returns PackedVector2Array)
 	var samples: PackedVector2Array = _h264_decoder.decode_audio(adpcm_data)
 	
-	if not _audio_started:
-		_audio_started = true
-		print("[Audio] First packet received! Playback started.")
-		emit_signal("status_changed", "Audio Stream: Receiving")
-	
-	# Push to Godot AudioStreamGenerator
 	if samples.size() > 0:
-		_audio_playback.push_buffer(samples)
+		_audio_buffer.append_array(samples)
+		
+		# Auto-catchup: If buffer is huge (>500ms), drop older samples to reduce latency
+		if _audio_buffer.size() > 24000:
+			_audio_buffer = _audio_buffer.slice(_audio_buffer.size() - 9600)
+			print("[Audio] Jitter buffer overflow - skipping ahead to reduce latency")
+
+func _update_audio_buffer() -> void:
+	if not _audio_playback:
+		return
+		
+	if _prebuffering:
+		if _audio_buffer.size() >= _prebuffer_size:
+			_prebuffering = false
+			print("[Audio] Prebuffering complete, starting playback.")
+			emit_signal("status_changed", "Audio Stream: Playing")
+		else:
+			return # Keep buffering
+			
+	# Push samples to fill the Godot buffer
+	var frames_needed = _audio_playback.get_frames_available()
+	if frames_needed > 0 and _audio_buffer.size() > 0:
+		var to_push = min(_audio_buffer.size(), frames_needed)
+		var push_data = _audio_buffer.slice(0, to_push)
+		_audio_playback.push_buffer(push_data)
+		_audio_buffer = _audio_buffer.slice(to_push)
 
 func _decode_loop() -> void:
 	while _running:
