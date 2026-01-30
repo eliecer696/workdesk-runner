@@ -70,6 +70,16 @@ bool H264Decoder::initialize(int expected_width, int expected_height) {
     #if defined(__ANDROID__) || defined(ANDROID_ENABLED)
     UtilityFunctions::print("[H264Decoder] Android platform detected.");
     
+    if (!g_jvm) {
+        // Fallback: Try to get the VM from JNI_GetCreatedJavaVMs
+        JavaVM* vms[1];
+        jsize num_vms = 0;
+        if (JNI_GetCreatedJavaVMs(vms, 1, &num_vms) == JNI_OK && num_vms > 0) {
+            g_jvm = vms[0];
+            UtilityFunctions::print("[H264Decoder] JavaVM found via JNI_GetCreatedJavaVMs fallback.");
+        }
+    }
+
     if (g_jvm) {
         // Register JavaVM with FFmpeg so it can access MediaCodec
         if (av_jni_set_java_vm(g_jvm, nullptr) == 0) {
@@ -78,7 +88,7 @@ bool H264Decoder::initialize(int expected_width, int expected_height) {
             UtilityFunctions::printerr("[H264Decoder] Failed to register JavaVM with FFmpeg!");
         }
     } else {
-        UtilityFunctions::printerr("[H264Decoder] JavaVM not found! (JNI_OnLoad not called?)");
+        UtilityFunctions::printerr("[H264Decoder] JavaVM not found! (JNI_OnLoad not called and JNI_GetCreatedJavaVMs failed)");
     }
 
     UtilityFunctions::print("[H264Decoder] Checking for h264_mediacodec...");

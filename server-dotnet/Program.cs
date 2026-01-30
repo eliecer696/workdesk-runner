@@ -20,7 +20,7 @@ internal static class Program
     // ═══════════════════════════════════════════════════════════════════════════
     private const int Port = 9000;
     private const int TargetFps = 60;           // Match monitor refresh rate as requested
-    private const int BitrateMbps = 12;         // Reduced from 15 to 12 for better stability
+    private const int BitrateMbps = 8;          // Reduced for 5G stability (v3.6)
     private const int MaxClients = 4;
     private const bool UseHardwareCapture = true;   // DXGI vs GDI+
     private const bool UseH264Encoding = true;      // H.264 vs JPEG fallback
@@ -482,10 +482,13 @@ internal static class Program
                     _encodedCount++;
 
                     _frameCount++;
-                    if (_frameCount % 600 == 1)
+                    if (_frameCount % 1200 == 1)
                     {
                         Console.WriteLine($"[Encode] Frame #{_frameCount}, size: {encodedData.Length} bytes, " +
                             $"key: {isKeyFrame}, time: {stopwatch.ElapsedMilliseconds}ms");
+                        
+                        // Force a keyframe every GOP interval if it wasn't one already
+                        _requestKeyframe = true;
                     }
                 }
             }
@@ -690,22 +693,15 @@ internal static class Program
 
         public byte[] Encode(short[] pcm)
         {
-            // Header (v3.6): [SampleL:2][IndexL:1][SampleR:2][IndexR:1] = 6 bytes
-            var output = new byte[6 + pcm.Length / 2];
+            // Stereo ADPCM: We interleave L and R nibbles? No, let's just do interleaved samples.
+            // Packet layout: [NibbleL][NibbleR] ...
+            var output = new byte[pcm.Length / 2]; // 4 bits per sample (2 samples per byte)
             
-            // Store state at the beginning of the packet for client resync
-            output[0] = (byte)(_lastSampleL & 0xFF);
-            output[1] = (byte)((_lastSampleL >> 8) & 0xFF);
-            output[2] = (byte)_lastIndexL;
-            output[3] = (byte)(_lastSampleR & 0xFF);
-            output[4] = (byte)((_lastSampleR >> 8) & 0xFF);
-            output[5] = (byte)_lastIndexR;
-
             for (int i = 0; i < pcm.Length; i += 2)
             {
                 byte nibbleL = EncodeSample(pcm[i], ref _lastSampleL, ref _lastIndexL);
                 byte nibbleR = EncodeSample(pcm[i + 1], ref _lastSampleR, ref _lastIndexR);
-                output[6 + i / 2] = (byte)((nibbleL << 4) | (nibbleR & 0x0F));
+                output[i / 2] = (byte)((nibbleL << 4) | (nibbleR & 0x0F));
             }
             return output;
         }
