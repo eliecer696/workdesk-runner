@@ -3,8 +3,8 @@ extends Node3D
 ## Displays buttons above the screen for lock, scale, and height adjustments
 
 @export var screen_controller_path: NodePath
-@export var button_spacing: float = 0.15
-@export var panel_height_offset: float = 0.55 # Above the screen
+@export var button_spacing: float = 0.2
+@export var panel_height_offset: float = 0.85 # Clearly above the 1.35m screen
 
 var _screen_controller: Node
 var _buttons: Array[Dictionary] = []
@@ -87,11 +87,11 @@ func _create_button_mesh(label: String, icon_file: String) -> Node3D:
 	
 	button_root.add_child(static_body)
 	
-	# Icon using Sprite3D
+	# Icon using Sprite3D (v3.2 Fix)
 	var sprite_3d := Sprite3D.new()
 	sprite_3d.name = "Icon"
 	sprite_3d.texture = load(ICON_PATH + icon_file)
-	sprite_3d.pixel_size = 0.0005 # Scale it to fit
+	sprite_3d.pixel_size = 0.0003
 	sprite_3d.position = Vector3(0, 0, 0.01)
 	sprite_3d.no_depth_test = true
 	sprite_3d.render_priority = 11

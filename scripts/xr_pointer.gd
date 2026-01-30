@@ -8,7 +8,7 @@ extends XRController3D
 @export var send_rate_hz: float = 60.0
 @export var trigger_threshold: float = 0.55
 @export var screen_size: Vector2 = Vector2(2.4, 1.35)
-@export var debug_input: bool = false  # Set to true to see input values in console
+@export var debug_input: bool = false # Set to true to see input values in console
 
 var ray: RayCast3D
 var laser: MeshInstance3D
@@ -19,7 +19,7 @@ var _client: Node
 var _viewport: SubViewport
 var _screen_controller: Node
 var _primary_down := false
-var _secondary_down := false  # For right-click
+var _secondary_down := false # For right-click
 var _time_since_send := 0.0
 var _last_uv := Vector2(-1, -1)
 var _last_pos_px := Vector2.ZERO
@@ -48,8 +48,10 @@ func _ready() -> void:
 	if ray:
 		ray.target_position = Vector3(0, 0, -ray_length)
 		ray.enabled = true
-	_update_laser(ray_length)
-	_set_reticle(false)
+	
+	# Hide fake mouse visuals (v3.2)
+	if laser: laser.visible = false
+	if reticle: reticle.visible = false
 	
 	# Check if XR is active
 	var xr_interface := XRServer.primary_interface
@@ -143,11 +145,11 @@ func _clear_pointer() -> void:
 	if _primary_down:
 		_primary_down = false
 		if _client and _client.has_method("send_pointer_event"):
-			_client.call("send_pointer_event", _last_uv, false, false, true, 0)  # Release left
+			_client.call("send_pointer_event", _last_uv, false, false, true, 0) # Release left
 	if _secondary_down:
 		_secondary_down = false
 		if _client and _client.has_method("send_pointer_event"):
-			_client.call("send_pointer_event", _last_uv, false, false, true, 1)  # Release right
+			_client.call("send_pointer_event", _last_uv, false, false, true, 1) # Release right
 	_set_reticle(false)
 	_update_laser(ray_length)
 
@@ -171,7 +173,7 @@ func _set_reticle(is_visible: bool, hit_pos: Vector3 = Vector3.ZERO) -> void:
 		reticle.global_transform.origin = hit_pos
 
 func _update_laser(distance: float) -> void:
-	if not laser:
+	if not laser or not laser.visible:
 		return
 	var clamped: float = maxf(distance, 0.01)
 	laser.scale = Vector3(1, 1, clamped)
