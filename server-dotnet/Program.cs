@@ -20,7 +20,7 @@ internal static class Program
     // ═══════════════════════════════════════════════════════════════════════════
     private const int Port = 9000;
     private const int TargetFps = 60;           // Match monitor refresh rate as requested
-    private const int BitrateMbps = 15;         // High bitrate for 5G (v3.7)
+    private const int BitrateMbps = 8;          // Reduced for 5G stability (v3.6)
     private const int MaxClients = 4;
     private const bool UseHardwareCapture = true;   // DXGI vs GDI+
     private const bool UseH264Encoding = true;      // H.264 vs JPEG fallback
@@ -600,39 +600,29 @@ internal static class Program
             
             var encoder = new ImaAdpcmEncoder();
             
-            // Resampler for consistent 48kHz output
-            var targetFormat = new WaveFormat(48000, 16, 2);
-            var bufferedWaveProvider = new BufferedWaveProvider(capture.WaveFormat) { BufferDuration = TimeSpan.FromSeconds(1), DiscardOnBufferOverflow = true };
-            using var resampler = new MediaFoundationResampler(bufferedWaveProvider, targetFormat);
-            resampler.ResamplerQuality = 60; // High quality
-            
-            capture.DataAvailable += (s, e) =>
+            capture.DataAvailable += async (s, e) =>
             {
                 if (Clients.IsEmpty) return;
 
-                // Push to buffer
-                bufferedWaveProvider.AddSamples(e.Buffer, 0, e.BytesRecorded);
-
-                // Use a reasonable buffer size for reading
-                var outBuffer = new byte[8192]; 
-                int bytesRead;
-                
-                while ((bytesRead = resampler.Read(outBuffer, 0, outBuffer.Length)) > 0)
+                // WASAPI Loopback is usually Float32/48kHz/Stereo
+                // Convert to PCM16 first
+                var pcm16 = new short[e.BytesRecorded / 4];
+                for (int i = 0; i < pcm16.Length; i++)
                 {
-                    var pcm16 = new short[bytesRead / 2];
-                    Buffer.BlockCopy(outBuffer, 0, pcm16, 0, bytesRead);
-
-                    // Encode to stateless IMA ADPCM (4:1)
-                    var adpcm = encoder.Encode(pcm16);
-
-                    // Build Type 3 packet: [Type:1][Data:N]
-                    var payload = new byte[1 + adpcm.Length];
-                    payload[0] = 3;
-                    adpcm.CopyTo(payload, 1);
-
-                    // Pulse to channel for sending
-                    _audioChannel!.Writer.TryWrite(payload);
+                    float sample = BitConverter.ToSingle(e.Buffer, i * 4);
+                    pcm16[i] = (short)(Math.Clamp(sample, -1f, 1f) * 32767);
                 }
+
+                // Encode to IMA ADPCM (4:1)
+                var adpcm = encoder.Encode(pcm16);
+
+                // Build Type 3 packet: [Type:1][Data:N]
+                var payload = new byte[1 + adpcm.Length];
+                payload[0] = 3;
+                adpcm.CopyTo(payload, 1);
+
+                // Pulse to channel for sending
+                await _audioChannel!.Writer.WriteAsync(payload, ct);
             };
 
             capture.StartRecording();
@@ -703,21 +693,15 @@ internal static class Program
 
         public byte[] Encode(short[] pcm)
         {
-            // Stateless Header (6 bytes): [SampleL:2][IndexL:1][SampleR:2][IndexR:1]
-            // Followed by interleaved nibbles
-            var output = new byte[6 + pcm.Length / 2];
+            // Stereo ADPCM: We interleave L and R nibbles? No, let's just do interleaved samples.
+            // Packet layout: [NibbleL][NibbleR] ...
+            var output = new byte[pcm.Length / 2]; // 4 bits per sample (2 samples per byte)
             
-            // Write Header
-            BitConverter.GetBytes((short)_lastSampleL).CopyTo(output, 0);
-            output[2] = (byte)_lastIndexL;
-            BitConverter.GetBytes((short)_lastSampleR).CopyTo(output, 3);
-            output[5] = (byte)_lastIndexR;
-
             for (int i = 0; i < pcm.Length; i += 2)
             {
                 byte nibbleL = EncodeSample(pcm[i], ref _lastSampleL, ref _lastIndexL);
                 byte nibbleR = EncodeSample(pcm[i + 1], ref _lastSampleR, ref _lastIndexR);
-                output[6 + i / 2] = (byte)((nibbleL << 4) | (nibbleR & 0x0F));
+                output[i / 2] = (byte)((nibbleL << 4) | (nibbleR & 0x0F));
             }
             return output;
         }

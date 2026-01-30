@@ -301,24 +301,15 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
 PackedVector2Array H264Decoder::decode_audio(const PackedByteArray& adpcm_data) {
     PackedVector2Array result;
     int data_size = adpcm_data.size();
-    if (data_size < 6) return result; // Need at least 6 bytes for header
+    if (data_size == 0) return result;
 
-    // Stateless Header (6 bytes): [SampleL:2][IndexL:1][SampleR:2][IndexR:1]
-    const uint8_t* src = adpcm_data.ptr();
-    
-    // Read and reset state for this packet
-    last_sample_l = (int16_t)(src[0] | (src[1] << 8));
-    last_index_l = src[2];
-    last_sample_r = (int16_t)(src[3] | (src[4] << 8));
-    last_index_r = src[5];
-
-    // Decode remaining nibbles (2 samples per byte)
-    int samples_to_decode = data_size - 6;
-    result.resize(samples_to_decode);
+    // 2 samples per byte (High nibble L, Low nibble R)
+    result.resize(data_size);
     Vector2* dst = result.ptrw();
+    const uint8_t* src = adpcm_data.ptr();
 
-    for (int i = 0; i < samples_to_decode; i++) {
-        uint8_t byte = src[6 + i];
+    for (int i = 0; i < data_size; i++) {
+        uint8_t byte = src[i];
         float sample_l = decode_sample_ima(byte >> 4, last_sample_l, last_index_l);
         float sample_r = decode_sample_ima(byte & 0x0F, last_sample_r, last_index_r);
         dst[i] = Vector2(sample_l, sample_r);
