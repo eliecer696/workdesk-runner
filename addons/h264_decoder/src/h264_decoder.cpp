@@ -195,19 +195,25 @@ PackedByteArray H264Decoder::decode_frame(const PackedByteArray& h264_data) {
         }
     }
 
-    // Copy U Plane
-    if (frame->data[1]) {
-        uint8_t* u_dst = dst + y_size;
+    // Interleave U and V Planes Side-by-Side
+    // Texture Layout:
+    // [         Y Plane (Full Width)         ]
+    // [ U Plane (Half Width) | V Plane (Half) ]
+    
+    if (frame->data[1] && frame->data[2]) {
+        uint8_t* uv_dst_start = dst + y_size;
+        
         for (int i = 0; i < uv_height; i++) {
-            memcpy(u_dst + (i * uv_width), frame->data[1] + (i * frame->linesize[1]), uv_width);
-        }
-    }
-
-    // Copy V Plane
-    if (frame->data[2]) {
-        uint8_t* v_dst = dst + y_size + uv_size;
-        for (int i = 0; i < uv_height; i++) {
-            memcpy(v_dst + (i * uv_width), frame->data[2] + (i * frame->linesize[2]), uv_width);
+            // Calculate pointers for this row
+            uint8_t* row_dst = uv_dst_start + (i * width);
+            uint8_t* u_src = frame->data[1] + (i * frame->linesize[1]);
+            uint8_t* v_src = frame->data[2] + (i * frame->linesize[2]);
+            
+            // Copy U to Left Half
+            memcpy(row_dst, u_src, uv_width);
+            
+            // Copy V to Right Half
+            memcpy(row_dst + uv_width, v_src, uv_width);
         }
     }
 
