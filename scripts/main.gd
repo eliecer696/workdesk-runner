@@ -9,14 +9,12 @@ extends Node3D
 @onready var disconnect_button: Button = get_node_or_null("DesktopViewport/DesktopUI/ConnectionPanel/DisconnectButton") as Button
 
 var _screen_material: StandardMaterial3D
-var _cursor_sprite: Sprite3D
 var _cursor_uv: Vector2 = Vector2(0.5, 0.5)
 var _screen_size: Vector2 = Vector2(2.4, 1.35) # Must match the screen mesh size
 
 func _ready() -> void:
 	_setup_xr()
 	_setup_screen_material()
-	_setup_cursor()
 	_wire_desktop_client()
 	_setup_connection_ui()
 	set_status("Desktop stream: not connected")
@@ -63,40 +61,6 @@ func _setup_screen_material() -> void:
 		
 	screen_mesh.material_override = material
 	print("[Main] Screen material setup with YUV shader")
-
-func _setup_cursor() -> void:
-	# Create cursor sprite as child of screen body
-	var screen_body = get_node_or_null("ScreenPivot/ScreenBody")
-	if not screen_body:
-		return
-	
-	_cursor_sprite = Sprite3D.new()
-	_cursor_sprite.name = "CursorSprite"
-	
-	# Create a simple cursor texture (white arrow)
-	var cursor_image := Image.create(32, 32, false, Image.FORMAT_RGBA8)
-	cursor_image.fill(Color(0, 0, 0, 0))
-	# Draw arrow shape
-	for y in range(24):
-		for x in range(min(y + 1, 16)):
-			cursor_image.set_pixel(x, y, Color.WHITE)
-		# Arrow outline
-		if y < 20:
-			cursor_image.set_pixel(min(y + 1, 15), y, Color.BLACK)
-	# Inner fill
-	for y in range(1, 20):
-		for x in range(1, min(y, 14)):
-			cursor_image.set_pixel(x, y, Color.WHITE)
-	
-	var cursor_texture := ImageTexture.create_from_image(cursor_image)
-	_cursor_sprite.texture = cursor_texture
-	_cursor_sprite.pixel_size = 0.001 # Scale cursor appropriately
-	_cursor_sprite.billboard = BaseMaterial3D.BILLBOARD_DISABLED
-	_cursor_sprite.position = Vector3(0, 0, 0.02) # Slightly in front of screen
-	_cursor_sprite.modulate = Color(1, 1, 1, 1)
-	
-	screen_body.add_child(_cursor_sprite)
-	print("[Main] Cursor sprite created")
 
 
 func _wire_desktop_client() -> void:
@@ -151,11 +115,6 @@ func _on_frame_received(texture: Texture2D, is_yuv: bool) -> void:
 
 func _on_cursor_received(uv: Vector2) -> void:
 	_cursor_uv = uv
-	if _cursor_sprite:
-		# Convert UV (0-1) to local position on screen
-		var local_x := (uv.x - 0.5) * _screen_size.x
-		var local_y := (0.5 - uv.y) * _screen_size.y # Flip Y
-		_cursor_sprite.position = Vector3(local_x, local_y, 0.02)
 
 func _on_status_changed(text: String) -> void:
 	set_status(text)

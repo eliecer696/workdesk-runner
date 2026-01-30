@@ -53,8 +53,8 @@ var _audio_generator: AudioStreamGenerator
 var _audio_started := false
 
 func _ready() -> void:
-	print("[DesktopClient] CLIENT v3.2 (UI Polishing)")
-	emit_signal("status_changed", "Client v3.2 Loaded")
+	print("[DesktopClient] CLIENT v3.3 (Pointer & Visual Cleanup)")
+	emit_signal("status_changed", "Client v3.3 Loaded")
 	
 	# Create shared resources
 	_frame_queue = []

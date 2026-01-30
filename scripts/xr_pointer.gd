@@ -29,6 +29,12 @@ var _pointer_over_screen := false
 var _hovered_ui_button: Node3D = null
 var _ui_panel: Node = null
 
+# Fade logic (v3.3)
+var _laser_alpha: float = 0.0
+var _fade_speed: float = 3.0
+var _is_right_hand := false
+var _laser_material: StandardMaterial3D = null
+
 func _ready() -> void:
 	_screen_body = get_node_or_null(screen_path)
 	_client = get_node_or_null(client_path)
@@ -45,22 +51,31 @@ func _ready() -> void:
 			elif "reticle" in child.name.to_lower():
 				reticle = child
 	
+	_is_right_hand = (tracker == &"right_hand")
+	
+	if not _is_right_hand:
+		if laser: laser.visible = false
+		if reticle: reticle.visible = false
+		set_process(false) # Disable pointer logic on left hand
+		return
+
+	if laser and laser.material_override:
+		_laser_material = laser.material_override.duplicate()
+		laser.material_override = _laser_material
+		_laser_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	
 	if ray:
 		ray.target_position = Vector3(0, 0, -ray_length)
 		ray.enabled = true
 	
-	# Hide fake mouse visuals (v3.2)
-	if laser: laser.visible = false
+	# Show visuals by default on start (will fade if idle)
+	if laser: laser.visible = true
 	if reticle: reticle.visible = false
 	
 	# Check if XR is active
 	var xr_interface := XRServer.primary_interface
 	_xr_active = xr_interface != null and xr_interface.is_initialized()
-	print("[XRPointer] XR Active: ", _xr_active)
-	print("[XRPointer] Controller tracker: ", tracker)
-	print("[XRPointer] Screen body: ", _screen_body)
-	print("[XRPointer] Client: ", _client)
-	print("[XRPointer] Screen controller: ", _screen_controller)
+	print("[XRPointer] Right Hand Pointer Active. XR: ", _xr_active)
 
 func _process(delta: float) -> void:
 	_time_since_send += delta
@@ -92,6 +107,24 @@ func _process(delta: float) -> void:
 	
 	# Update UI button hover state
 	_update_ui_button_hover(hit_ui_button)
+	
+	# Fade logic: Laser is visible while hitting something or trigger is pressed
+	var active := is_over_screen or hit_ui_button != null or get_float("trigger") > 0.1
+	if active:
+		_laser_alpha = move_toward(_laser_alpha, 1.0, delta * _fade_speed * 2.0)
+	else:
+		_laser_alpha = move_toward(_laser_alpha, 0.0, delta * _fade_speed)
+	
+	if _laser_material:
+		_laser_material.albedo_color.a = _laser_alpha
+		# Also fade emission if it's on
+		if _laser_material.emission_enabled:
+			var emission_color = _laser_material.emission
+			emission_color.a = _laser_alpha
+			_laser_material.emission = emission_color
+			
+	if laser:
+		laser.visible = _laser_alpha > 0.001
 	
 	# Update screen controller about pointer status
 	if is_over_screen != _pointer_over_screen:
