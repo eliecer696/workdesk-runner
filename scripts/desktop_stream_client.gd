@@ -58,8 +58,8 @@ var _prebuffer_size := 28800 # ~600ms at 48kHz (v3.7 Overhaul)
 var _target_playback_fill := 4800 # Keep 100ms in Godot's buffer
 
 func _ready() -> void:
-	print("[DesktopClient] CLIENT v3.7.2 (Final Stable Architecture)")
-	emit_signal("status_changed", "Client v3.7.2 Loaded")
+	print("[DesktopClient] CLIENT v3.7.3 (Final Stable Architecture - RECOVERY)")
+	emit_signal("status_changed", "Client v3.7.3 Loaded")
 	
 	# Create shared resources
 	_frame_queue = []
@@ -376,7 +376,6 @@ func _on_frame_decoded(image: Image, decode_time: float, is_keyframe: bool) -> v
 		_reusable_texture = ImageTexture.create_from_image(image)
 		_last_frame_size = frame_size
 		print("[DesktopClient] Created texture: %dx%d fmt=%d" % [frame_size.x, frame_size.y, image.get_format()])
-		print("[DesktopClient] Created texture: %dx%d fmt=%d" % [frame_size.x, frame_size.y, image.get_format()])
 	else:
 		_reusable_texture.set_image(image)
 	
@@ -420,3 +419,12 @@ func send_pointer_event(uv: Vector2, pressed: bool, just_pressed: bool, just_rel
 		"button": button
 	}
 	_ws.send_text(JSON.stringify(msg))
+
+func _get_error_name(err: int) -> String:
+	match err:
+		OK: return "OK"
+		ERR_CANT_CONNECT: return "ERR_CANT_CONNECT"
+		ERR_CANT_RESOLVE: return "ERR_CANT_RESOLVE"
+		ERR_CONNECTION_ERROR: return "ERR_CONNECTION_ERROR"
+		ERR_TIMEOUT: return "ERR_TIMEOUT"
+		_: return "ERROR_%d" % err
