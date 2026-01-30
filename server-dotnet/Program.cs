@@ -690,15 +690,22 @@ internal static class Program
 
         public byte[] Encode(short[] pcm)
         {
-            // Stereo ADPCM: We interleave L and R nibbles? No, let's just do interleaved samples.
-            // Packet layout: [NibbleL][NibbleR] ...
-            var output = new byte[pcm.Length / 2]; // 4 bits per sample (2 samples per byte)
+            // Header (v3.6): [SampleL:2][IndexL:1][SampleR:2][IndexR:1] = 6 bytes
+            var output = new byte[6 + pcm.Length / 2];
             
+            // Store state at the beginning of the packet for client resync
+            output[0] = (byte)(_lastSampleL & 0xFF);
+            output[1] = (byte)((_lastSampleL >> 8) & 0xFF);
+            output[2] = (byte)_lastIndexL;
+            output[3] = (byte)(_lastSampleR & 0xFF);
+            output[4] = (byte)((_lastSampleR >> 8) & 0xFF);
+            output[5] = (byte)_lastIndexR;
+
             for (int i = 0; i < pcm.Length; i += 2)
             {
                 byte nibbleL = EncodeSample(pcm[i], ref _lastSampleL, ref _lastIndexL);
                 byte nibbleR = EncodeSample(pcm[i + 1], ref _lastSampleR, ref _lastIndexR);
-                output[i / 2] = (byte)((nibbleL << 4) | (nibbleR & 0x0F));
+                output[6 + i / 2] = (byte)((nibbleL << 4) | (nibbleR & 0x0F));
             }
             return output;
         }

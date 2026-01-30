@@ -53,12 +53,21 @@ var _audio_generator: AudioStreamGenerator
 var _audio_started := false
 var _audio_buffer: PackedVector2Array = PackedVector2Array() # Jitter buffer
 var _prebuffering := true
-var _prebuffer_size := 7200 # ~150ms at 48kHz
-var _target_playback_fill := 2400 # Keep 50ms in Godot's buffer
+var _prebuffer_size := 9600 # ~200ms at 48kHz (v3.6)
+var _target_playback_fill := 4800 # Keep 100ms in Godot's buffer
+
+const IMA_INDEX_TABLE := [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8]
+const IMA_STEP_TABLE := [
+	7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+	50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
+	337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
+	2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899,
+	15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
+]
 
 func _ready() -> void:
-	print("[DesktopClient] CLIENT v3.5 (Audio Stabilization)")
-	emit_signal("status_changed", "Client v3.5 Loaded")
+	print("[DesktopClient] CLIENT v3.6 (Resilient Audio)")
+	emit_signal("status_changed", "Client v3.6 Loaded")
 	
 	# Create shared resources
 	_frame_queue = []
@@ -268,16 +277,57 @@ func _handle_frame_packet(bytes: PackedByteArray) -> void:
 	_decode_semaphore.post()
 
 func _handle_audio_packet(adpcm_data: PackedByteArray) -> void:
-	# Decoding IMA ADPCM in C++ GDExtension (returns PackedVector2Array)
-	var samples: PackedVector2Array = _h264_decoder.decode_audio(adpcm_data)
+	# Resync Decoder (v3.6): Uses 6-byte header to stay perfectly in sync
+	if adpcm_data.size() < 6: return
+	
+	# Header: [SampleL:2][IndexL:1][SampleR:2][IndexR:1]
+	var pL = adpcm_data.decode_s16(0)
+	var iL = adpcm_data[2]
+	var pR = adpcm_data.decode_s16(3)
+	var iR = adpcm_data[5]
+	
+	var nibbles = adpcm_data.slice(6)
+	var count = nibbles.size()
+	var samples := PackedVector2Array()
+	samples.resize(count)
+	
+	# Inline decoding for performance
+	for i in range(count):
+		var b = nibbles[i]
+		
+		# Channel L (High Nibble)
+		var nL = b >> 4
+		var sL = IMA_STEP_TABLE[iL]
+		var dL = sL >> 3
+		if nL & 4: dL += sL
+		if nL & 2: dL += sL >> 1
+		if nL & 1: dL += sL >> 2
+		if nL & 8: pL -= dL
+		else: pL += dL
+		pL = clampi(pL, -32768, 32767)
+		iL = clampi(iL + IMA_INDEX_TABLE[nL], 0, 88)
+		
+		# Channel R (Low Nibble)
+		var nR = b & 0x0F
+		var sR = IMA_STEP_TABLE[iR]
+		var dR = sR >> 3
+		if nR & 4: dR += sR
+		if nR & 2: dR += sR >> 1
+		if nR & 1: dR += sR >> 2
+		if nR & 8: pR -= dR
+		else: pR += dR
+		pR = clampi(pR, -32768, 32767)
+		iR = clampi(iR + IMA_INDEX_TABLE[nR], 0, 88)
+		
+		samples[i] = Vector2(float(pL) / 32768.0, float(pR) / 32768.0)
 	
 	if samples.size() > 0:
 		_audio_buffer.append_array(samples)
 		
-		# Auto-catchup: If buffer is huge (>500ms), drop older samples to reduce latency
+		# Auto-catchup: If buffer is huge (>500ms), drop older samples
 		if _audio_buffer.size() > 24000:
 			_audio_buffer = _audio_buffer.slice(_audio_buffer.size() - 9600)
-			print("[Audio] Jitter buffer overflow - skipping ahead to reduce latency")
+			print("[Audio] Jitter buffer overflow - skipping to reduce latency")
 
 func _update_audio_buffer() -> void:
 	if not _audio_playback:
